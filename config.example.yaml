@@ -1,0 +1,53 @@
+server:
+  host: "0.0.0.0"
+  port: 8787
+
+auth:
+  username: "admin"
+  # 默认密码 admin123 —— 上线前务必修改
+  password_hash: "$2b$12$gTzuV/qodW.QINkFIt9XlOorOGLvjsKGbbaHf.LBdHrYMCoe1sg1K"
+  jwt_secret: "change-me-to-long-random-string"
+  jwt_expire_sec: 86400
+
+collect:
+  interval_sec: 30
+  fs_interval_sec: 60
+  retention_days: 7
+  # true：无 Docker/SMART 时用模拟数据，便于开发机跑通
+  mock_on_failure: true
+  filesystem_mounts: []
+  filesystem_exclude_prefixes:
+    - "/proc"
+    - "/sys"
+    - "/run"
+    - "/var/lib/docker"
+    - "/snap"
+
+smart:
+  enabled: true
+  interval_sec: 900
+  devices: []
+  skip_standby: true
+  temp_warn_c: 55
+
+docker:
+  enabled: true
+  watch_containers: []
+
+alerts:
+  enabled: true
+  cooldown_default_sec: 3600
+  apprise_urls: []
+  # - "tgram://BOT_TOKEN/CHAT_ID"
+  # - "mailto://user:pass@smtp.example.com:587?to=you@example.com"
+  # - "json://example.com/webhook"
+  rules:
+    fs_used_warn_pct: 85
+    fs_used_crit_pct: 95
+    cpu_high_pct: 90
+    cpu_high_duration_sec: 600
+    mem_used_warn_pct: 90
+    temp_cpu_warn_c: 85
+
+display:
+  timezone: "Asia/Shanghai"

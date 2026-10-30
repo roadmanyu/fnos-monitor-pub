@@ -1,0 +1,26 @@
+[project]
+name = "fnos-monitor"
+version = "0.1.0"
+description = "飞牛 OS 家用 NAS 轻量监控"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.0",
+  "pyyaml>=6.0",
+  "passlib[bcrypt]>=1.7.4",
+  "bcrypt>=4.0,<4.3",
+  "python-jose[cryptography]>=3.3.0",
+  "apprise>=1.8.0",
+  "docker>=7.0.0",
+  "psutil>=5.9.0",
+  "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

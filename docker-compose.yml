@@ -1,0 +1,22 @@
+services:
+  monitor:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: fnos-monitor
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - monitor-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=Asia/Shanghai
+      - MONITOR_DATA_DIR=/data
+      - MONITOR_CONFIG=/app/config.yaml
+    # 家用 SMART：需要访问磁盘设备。生产可改为 cap_add + devices。
+    privileged: true
+
+volumes:
+  monitor-data:

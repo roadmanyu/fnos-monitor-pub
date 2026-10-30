@@ -1,0 +1,32 @@
+# Local config and secrets. Commit config.example.yaml only.
+config.yaml
+.env
+.env.*
+secrets/
+*.pem
+*.key
+
+# Runtime data
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Python
+.venv/
+venv/
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Node and frontend build output (image build produces these)
+node_modules/
+web/node_modules/
+web/dist/
+backend/app/static/
+
+# OS / editor
+.DS_Store
+*.swp
