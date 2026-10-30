@@ -11,8 +11,8 @@ export default defineConfig({
         name: '飞牛监控',
         short_name: 'fnMonitor',
         description: '飞牛 OS 家用 NAS 监控',
-        theme_color: '#0f172a',
-        background_color: '#0f172a',
+        theme_color: '#f3f5f8',
+        background_color: '#f3f5f8',
         display: 'standalone',
         start_url: '/',
         icons: [

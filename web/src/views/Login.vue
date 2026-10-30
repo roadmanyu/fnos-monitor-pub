@@ -28,14 +28,72 @@ async function submit() {
 </script>
 
 <template>
-  <div class="page" style="max-width:400px;margin-top:10vh">
-    <h1>飞牛监控</h1>
-    <p class="muted">局域网 NAS 监控 · 默认账号见 README</p>
-    <div class="card" style="margin-top:16px;display:grid;gap:12px">
-      <label>用户名<input v-model="username" autocomplete="username" /></label>
-      <label>密码<input v-model="password" type="password" autocomplete="current-password" /></label>
-      <p v-if="error" style="color:var(--crit);margin:0">{{ error }}</p>
-      <button class="btn" :disabled="loading" @click="submit">{{ loading ? '登录中…' : '登录' }}</button>
-    </div>
+  <div class="login-shell">
+    <form class="card login-card" @submit.prevent="submit">
+      <div class="login-brand">
+        <span class="brand-mark lg">飞</span>
+        <div>
+          <h1>飞牛监控</h1>
+          <p class="muted">局域网 NAS 监控</p>
+        </div>
+      </div>
+      <label>
+        用户名
+        <input v-model="username" autocomplete="username" />
+      </label>
+      <label>
+        密码
+        <input v-model="password" type="password" autocomplete="current-password" />
+      </label>
+      <p v-if="error" class="err">{{ error }}</p>
+      <button class="btn" type="submit" :disabled="loading">{{ loading ? '登录中…' : '登录' }}</button>
+      <p class="muted hint">默认账号见 README。请在 NAS 上修改 config.yaml。</p>
+    </form>
   </div>
 </template>
+
+<style scoped>
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px 16px;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 28px 26px 22px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+
+.brand-mark.lg {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  font-size: 1.25rem;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.err {
+  margin: 0;
+  color: var(--crit);
+  font-size: 0.9rem;
+}
+
+.hint { margin: 0; font-size: 0.8rem; }
+</style>

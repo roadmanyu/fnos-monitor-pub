@@ -29,7 +29,7 @@ onMounted(load)
   <div class="page">
     <h2>磁盘</h2>
     <p v-if="err" style="color:var(--crit)">{{ err }}</p>
-    <div class="card">
+    <div class="card table-card">
       <h3>容量</h3>
       <table>
         <thead><tr><th>挂载</th><th>设备</th><th>使用率</th></tr></thead>
@@ -42,7 +42,7 @@ onMounted(load)
         </tbody>
       </table>
     </div>
-    <div class="card" style="margin-top:16px">
+    <div class="card table-card" style="margin-top:16px">
       <h3>SMART</h3>
       <table>
         <thead><tr><th>盘</th><th>型号</th><th>健康</th><th>温度</th><th>通电</th><th></th></tr></thead>
@@ -63,7 +63,7 @@ onMounted(load)
         </tbody>
       </table>
     </div>
-    <div v-if="detail" class="card" style="margin-top:16px">
+    <div v-if="detail" class="card table-card" style="margin-top:16px">
       <h3>{{ detail.id }} 属性</h3>
       <p class="muted">更新 {{ detail.raw_updated_ts }}</p>
       <table>

@@ -3,7 +3,7 @@
 轻量自研：**采集 → SQLite → FastAPI `/api/v1` → Vue 3 PWA**。  
 面向个人/家里飞牛 NAS，**仅局域网**。告警经 Apprise（Telegram、企业微信/钉钉/飞书 Webhook、邮件、通用 Webhook；**不含 Bark**）。
 
-设计文档：`方案-整体设计.md`、`方案-MVP详细设计.md`。
+设计文档：`方案-整体设计.md`、`方案-MVP详细设计.md`、`方案-UI风格-watch对齐.md`。
 
 ## 默认账号
 
