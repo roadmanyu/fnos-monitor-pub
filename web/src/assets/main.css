@@ -135,6 +135,45 @@ code {
 
 .nav .btn { margin-left: auto; }
 
+.nas-tabs { flex: 1; min-width: 0; }
+.nas-tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.92rem;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.nas-tab.on {
+  background: #e7f6f4;
+  color: var(--teal-ink);
+}
+.nas-tab.add { color: var(--teal-ink); }
+.brand-name { white-space: nowrap; }
+
+#add-nas,
+.drawer {
+  scroll-margin-top: 84px;
+}
+.drawer {
+  margin-top: 14px;
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 4px 18px 12px;
+}
+.drawer > summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 12px 0;
+  list-style: none;
+}
+.drawer > summary::-webkit-details-marker { display: none; }
+.embed { padding: 0 0 8px; }
+
 .btn {
   background: var(--ink);
   color: #fff;

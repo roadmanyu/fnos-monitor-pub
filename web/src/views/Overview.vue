@@ -1,6 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '../api/client'
+import { nas, rememberLocalName } from '../nas/profiles'
+import Alerts from './Alerts.vue'
+import Disks from './Disks.vue'
+import Docker from './Docker.vue'
 import {
   clampPct,
   formatBytes,
@@ -8,12 +13,18 @@ import {
   formatDateLine,
   formatMemShort,
   formatPct,
-  formatTs
+  formatRate,
+  formatTs,
+  formatUptime
 } from '../utils/format'
 
 const snap = ref(null)
 const meta = ref(null)
-const hist = ref({ cpu: [], mem: [], load: [], temp: [] })
+const hist = ref({ cpu: [], mem: [], load: [], temp: [], up: [], down: [] })
+const route = useRoute()
+const diskOpen = ref(false)
+const dockerOpen = ref(false)
+const alertOpen = ref(false)
 const alerts = ref([])
 const containers = ref([])
 const err = ref('')
@@ -33,6 +44,28 @@ const filesystems = computed(() => {
 })
 const disks = computed(() => snap.value?.disks_smart_summary || [])
 const cpuTemp = computed(() => host.value?.temps_c?.cpu ?? null)
+const cores = computed(() => (Array.isArray(host.value?.cpu_cores) ? host.value.cpu_cores : []))
+const uptimeText = computed(() => formatUptime(host.value?.uptime_sec))
+const swapKnown = computed(() => host.value?.swap_total_bytes != null)
+const netKnown = computed(() => host.value && Object.prototype.hasOwnProperty.call(host.value, 'net_up_bps'))
+const diskIoText = computed(() => {
+  const h = host.value || {}
+  if (!Object.prototype.hasOwnProperty.call(h, 'disk_read_bps')) return ''
+  const read = formatRate(h.disk_read_bps)
+  const write = formatRate(h.disk_write_bps)
+  if (!read && !write) return '读写 采集中'
+  return `读 ${read || '—'} · 写 ${write || '—'}`
+})
+const netTrend = computed(() => {
+  const up = (hist.value.up || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
+  const down = (hist.value.down || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
+  const peak = Math.max(1, ...up, ...down)
+  return {
+    has: up.length + down.length > 0,
+    up: linePath(up, 320, 72, peak),
+    down: linePath(down, 320, 72, peak)
+  }
+})
 
 const clockText = computed(() => formatClock(now.value, tz.value))
 const dateText = computed(() => formatDateLine(now.value, tz.value))
@@ -154,22 +187,27 @@ async function load() {
     meta.value = m
     snap.value = s
     alerts.value = a
+    rememberLocalName(m?.hostname)
     err.value = ''
   } catch (e) {
     err.value = e.message || '加载失败'
   }
-  const [cpu, mem, load, temp, dock] = await Promise.all([
+  const [cpu, mem, load, temp, up, down, dock] = await Promise.all([
     safeHist('cpu.pct'),
     safeHist('mem.used_pct'),
     safeHist('load1'),
     safeHist('temp.cpu'),
+    safeHist('net.up_bps'),
+    safeHist('net.down_bps'),
     safeJson('/docker/containers')
   ])
   hist.value = {
     cpu: cpu ?? hist.value.cpu,
     mem: mem ?? hist.value.mem,
     load: load ?? hist.value.load,
-    temp: temp ?? hist.value.temp
+    temp: temp ?? hist.value.temp,
+    up: up ?? hist.value.up,
+    down: down ?? hist.value.down
   }
   if (dock) containers.value = dock.containers || []
 }
@@ -213,10 +251,46 @@ function ctrDot(state) {
   return ''
 }
 
+function resetView() {
+  snap.value = null
+  meta.value = null
+  alerts.value = []
+  containers.value = []
+  hist.value = { cpu: [], mem: [], load: [], temp: [], up: [], down: [] }
+}
+
+async function openDrawer(id) {
+  await nextTick()
+  const el = document.getElementById(id)
+  if (!el) return
+  el.open = true
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function onDrawerToggle(e) {
+  const el = e.target
+  if (el.id === 'disk-detail') diskOpen.value = el.open
+  if (el.id === 'docker-detail') dockerOpen.value = el.open
+  if (el.id === 'alert-detail') alertOpen.value = el.open
+}
+
+function rateLabel(value, known) {
+  if (!known) return '暂无数据'
+  return formatRate(value) || '采集中'
+}
+
 onMounted(() => {
   load()
   poll = setInterval(load, 30000)
   clock = setInterval(() => { now.value = new Date() }, 1000)
+  if (route.hash) openDrawer(route.hash.slice(1))
+})
+watch(() => nas.activeId, () => {
+  resetView()
+  load()
+})
+watch(() => route.hash, (hash) => {
+  if (hash) openDrawer(hash.slice(1))
 })
 onUnmounted(() => {
   clearInterval(poll)
@@ -318,6 +392,10 @@ function linePath(values, w, h, domainMax) {
             <span>负载</span>
             <b>{{ host.load1 ?? '—' }} · 5m {{ host.load5 ?? '—' }}</b>
           </div>
+          <div v-if="uptimeText" class="fact">
+            <span>运行</span>
+            <b>{{ uptimeText }}</b>
+          </div>
           <div class="fact">
             <span>更新</span>
             <b class="age" :class="{ stale: collectStale }" :title="formatTs(meta?.last_collect_ts || snap?.ts, tz)">{{ ageText }}</b>
@@ -354,9 +432,14 @@ function linePath(values, w, h, domainMax) {
         <div class="metric">
           <div class="metric-top">
             <span>SWAP</span>
-            <b class="na">暂无数据</b>
+            <b v-if="swapKnown && host.swap_total_bytes > 0">
+              {{ formatBytes(host.swap_used_bytes) }}
+              <em class="swap-em">{{ formatPct(host.swap_used_pct, 0) }}%</em>
+            </b>
+            <b v-else-if="swapKnown" class="na">无交换分区</b>
+            <b v-else class="na">暂无数据</b>
           </div>
-          <div class="seg swap" style="--p: 0%"></div>
+          <div class="seg swap" :style="{ '--p': (swapKnown ? clampPct(host.swap_used_pct) : 0) + '%' }"></div>
         </div>
       </section>
 
@@ -406,15 +489,19 @@ function linePath(values, w, h, domainMax) {
         </header>
         <div class="net-stats">
           <div>
-            <div class="k">↑ UPLOAD</div>
-            <div class="net-v">—</div>
+            <div class="k">↑ 上传</div>
+            <div class="net-v">{{ rateLabel(host.net_up_bps, netKnown) }}</div>
           </div>
           <div>
-            <div class="k">↓ DOWNLOAD</div>
-            <div class="net-v">—</div>
+            <div class="k">↓ 下载</div>
+            <div class="net-v">{{ rateLabel(host.net_down_bps, netKnown) }}</div>
           </div>
         </div>
-        <div class="empty grow">暂无数据</div>
+        <svg v-if="netTrend.has" viewBox="0 0 320 72" class="net-svg" preserveAspectRatio="none">
+          <path :d="netTrend.down" fill="none" stroke="#8b7cf6" stroke-width="2" vector-effect="non-scaling-stroke" />
+          <path :d="netTrend.up" fill="none" stroke="#5b8def" stroke-width="2" vector-effect="non-scaling-stroke" />
+        </svg>
+        <div v-else class="empty grow">{{ netKnown ? '采集中' : '暂无数据' }}</div>
       </section>
 
       <section class="card mod span-4">
@@ -448,6 +535,12 @@ function linePath(values, w, h, domainMax) {
               <span>1m {{ host.load1 ?? '—' }}</span>
               <span>5m {{ host.load5 ?? '—' }}</span>
             </div>
+            <div v-if="cores.length > 1" class="core-row">
+              <span v-for="(c, i) in cores.slice(0, 8)" :key="i" class="core" :title="'核心 ' + i">
+                <i :style="{ height: clampPct(c) + '%' }"></i>{{ Math.round(c) }}
+              </span>
+              <span v-if="cores.length > 8" class="muted">+{{ cores.length - 8 }}</span>
+            </div>
             <button
               type="button"
               class="fold"
@@ -476,18 +569,18 @@ function linePath(values, w, h, domainMax) {
           </span>
         </header>
         <div class="health-row">
-          <router-link class="health-cell" to="/alerts">
+          <a class="health-cell" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">
             <div class="k">未确认告警</div>
             <b :class="{ bad: unackedCount > 0 }">{{ healthReady ? unackedCount : '—' }}</b>
-          </router-link>
-          <router-link class="health-cell" to="/disks">
+          </a>
+          <a class="health-cell" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">
             <div class="k">SMART 失败</div>
             <b :class="{ bad: smartFail > 0 }">{{ healthReady ? smartFail : '—' }}</b>
-          </router-link>
-          <router-link class="health-cell" to="/docker">
+          </a>
+          <a class="health-cell" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">
             <div class="k">容器未运行</div>
             <b :class="{ warn: dockerDown > 0 }">{{ healthReady ? dockerDown : '—' }}</b>
-          </router-link>
+          </a>
         </div>
       </section>
 
@@ -495,7 +588,7 @@ function linePath(values, w, h, domainMax) {
         <header class="mod-head">
           <span class="mid">M07</span>
           <span class="mod-title">Docker</span>
-          <router-link class="mod-link push" to="/docker">全部</router-link>
+          <a class="mod-link push" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">全部</a>
         </header>
         <div class="sum-row">
           <div class="sum">
@@ -543,8 +636,8 @@ function linePath(values, w, h, domainMax) {
         <header class="mod-head">
           <span class="mid">M08</span>
           <span class="mod-title">存储池</span>
-          <span class="io-note push">按使用率 · 读写暂无数据</span>
-          <router-link class="mod-link" to="/disks">全部</router-link>
+          <span class="io-note push">{{ diskIoText || '按使用率 · 读写暂无数据' }}</span>
+          <a class="mod-link" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">全部</a>
         </header>
         <div v-if="filesystems.length" class="pool-row">
           <div v-for="fs in filesystems" :key="fs.id" class="pool">
@@ -588,7 +681,7 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-12 alerts">
         <header class="mod-head">
           <span class="mod-title">最近告警</span>
-          <router-link class="mod-link push" to="/alerts">全部</router-link>
+          <a class="mod-link push" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">全部</a>
         </header>
         <div v-if="recentAlerts.length" class="alert-list">
           <div v-for="a in recentAlerts" :key="a.id" class="alert-row">
@@ -601,6 +694,19 @@ function linePath(values, w, h, domainMax) {
         <p v-else class="muted empty-inline">暂无告警</p>
       </section>
     </div>
+
+    <details id="disk-detail" class="drawer" @toggle="onDrawerToggle">
+      <summary>磁盘详情</summary>
+      <Disks v-if="diskOpen" embedded />
+    </details>
+    <details id="docker-detail" class="drawer" @toggle="onDrawerToggle">
+      <summary>Docker 详情</summary>
+      <Docker v-if="dockerOpen" embedded />
+    </details>
+    <details id="alert-detail" class="drawer" @toggle="onDrawerToggle">
+      <summary>告警详情</summary>
+      <Alerts v-if="alertOpen" embedded />
+    </details>
   </div>
 </template>
 
@@ -759,6 +865,7 @@ function linePath(values, w, h, domainMax) {
   color: var(--muted);
   letter-spacing: 0;
 }
+.swap-em { color: #fb923c; }
 
 .seg {
   height: 12px;
@@ -822,9 +929,10 @@ function linePath(values, w, h, domainMax) {
 }
 
 .net-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.net-svg { width: 100%; height: 72px; display: block; margin-top: 6px; }
 .net-v {
   margin-top: 2px;
-  font-size: 1.7rem;
+  font-size: 1.2rem;
   font-weight: 650;
   letter-spacing: -0.03em;
   color: var(--ink);
@@ -882,6 +990,26 @@ function linePath(values, w, h, domainMax) {
   font-size: 0.8rem;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
+}
+.core-row { display: flex; gap: 6px; align-items: flex-end; flex-wrap: wrap; }
+.core {
+  width: 22px;
+  height: 36px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  font-size: 0.62rem;
+  color: #607086;
+  font-variant-numeric: tabular-nums;
+}
+.core i {
+  display: block;
+  width: 8px;
+  background: #3dcec6;
+  border-radius: 99px;
+  margin-bottom: 2px;
+  min-height: 2px;
 }
 .fold {
   justify-self: start;

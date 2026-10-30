@@ -1,9 +1,14 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, setToken } from '../api/client'
+import { activeProfile } from '../nas/profiles'
 
 const router = useRouter()
+const targetLabel = computed(() => {
+  const p = activeProfile()
+  return p?.baseUrl ? `${p.name} · ${p.baseUrl}` : `${p?.name || '本机'} · 当前站点`
+})
 const username = ref('admin')
 const password = ref('admin123')
 const error = ref('')
@@ -34,7 +39,7 @@ async function submit() {
         <span class="brand-mark lg">飞</span>
         <div>
           <h1>飞牛监控</h1>
-          <p class="muted">局域网 NAS 监控</p>
+          <p class="muted">{{ targetLabel }}</p>
         </div>
       </div>
       <label>

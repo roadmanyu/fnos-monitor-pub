@@ -35,14 +35,16 @@
 | 模块 | 画什么 | 数据从哪来 | 没有字段时 |
 |------|--------|------------|------------|
 | M01 系统 | 日期、大时钟、主机名、在线胶囊、内存、负载、**N 秒前更新**、版本 | 时钟按 `meta.timezone_display`；`GET /meta` 与 `snapshot.host` | 温度缺失显示「—」。更新时间超过 **2 个** `collect_interval_sec` 时数字变黄，避免每个采集周期末尾闪黄 |
-| M02 资源 | CPU、内存分段条；交换一行 | `host.cpu_pct`、`mem_used_*` | 交换「暂无数据」。不画功耗、网卡 |
+| M02 资源 | CPU、内存、**交换**分段条 | `host.cpu_pct`、`mem_used_*`、`swap_*` | 旧接口没有 `swap_total_bytes` 时仍写「暂无数据」。总量为 0 写「无交换分区」 |
 | M03 趋势 | 近 1 小时，可叠加切换 CPU / 内存 / 负载 / 温度 | `cpu.pct`、`mem.used_pct`、`load1`、`temp.cpu` | 该序列没有点就不画线。负载按自身峰值、温度按至少 0–100°C，不与百分比共轴 |
-| M04 网络 | 上传 / 下载占位 | 无网卡计数 | 「—」和「暂无数据」，保留占位 |
+| M04 网络 | 上传 / 下载（B/s）和两条近 1 小时线 | `host.net_up_bps` / `net_down_bps`，历史 `net.up_bps` / `net.down_bps`。速率是相邻两次采集的字节差 | 首轮还没有差值时显示「采集中」 |
 | M05 CPU | 整机圆环、温度、1m/5m，**其它温度可折叠** | `cpu_pct`、`temps_c.cpu`、`temps_c.other`、`load1` / `load5` | 无分核。`other` 为空时写「其它温度 暂无数据」 |
 | M06 风扇 | 不做 | 无风扇接口 | 整卡省略 |
 | M10 健康 | 一行状态「全部正常 / 有问题」，三格可点进告警 / 磁盘 / Docker | 未确认：`GET /alerts?limit=200` 里 `acked=false` 的条数；SMART 失败：`disks_smart_summary.healthy === false`；未运行：`snapshot.docker.stopped` | 告警接口没有单独计数，只统计最近 200 条里的未确认。快照还没到时数字为「—」 |
 | M07 Docker | 运行 / 停止 / 合计大数字，状态点列表只展示资源 Top 5 | 汇总用 `snapshot.docker`；排序用 `/docker/containers` 的 `cpu_pct` 或 `mem_usage_bytes`。CPU ≥ 50% 的行高亮 | 列表空则「暂无数据」 |
-| M08 存储池 | 按 `used_pct` 从高到低；≥85 琥珀，≥95 玫红 | `snapshot.filesystems` | 读写 IO「暂无数据」 |
+| M08 存储池 | 按 `used_pct` 从高到低；≥85 琥珀，≥95 玫红；标题带整机读/写速率 | `snapshot.filesystems`，`host.disk_read_bps` / `disk_write_bps` | 没有这两字段时仍写「读写暂无数据」 |
+
+总览是一页看完一台 NAS。顶栏是 NAS 标签（本机 + 设置里添加的局域网地址），磁盘 / Docker / 告警从主导航拿掉，在总览底部用详情折叠打开。设置页单独保留。多机只切换 API 根地址和各自 JWT，不在一台机器上采集另一台。
 | M09 硬盘 | 标题汇总 OK / FAIL / STANDBY / 最热温度，下面仍是单盘卡片 | `disks_smart_summary` | 没有单盘容量。最热没有温度时为「—」 |
 | 最近告警 | 最多 5 条，已确认打标 | 同一次告警列表的前 5 条 | 无记录写「暂无告警」 |
 

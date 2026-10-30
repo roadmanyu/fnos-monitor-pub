@@ -25,6 +25,32 @@ export function formatBytes(n, digits = 1) {
   return `${v.toFixed(d)} ${units[i]}`
 }
 
+/** Bytes per second, e.g. 12.4 KB/s. Returns null when the sample is missing. */
+export function formatRate(bps) {
+  if (bps == null || bps === '' || Number.isNaN(Number(bps))) return null
+  const n = Number(bps)
+  if (n < 1024) return `${n.toFixed(0)} B/s`
+  if (n < 1024 * 1024) {
+    const kb = n / 1024
+    return `${kb.toFixed(kb >= 10 ? 0 : 1)} KB/s`
+  }
+  const mb = n / 1024 / 1024
+  return `${mb.toFixed(mb >= 10 ? 1 : 2)} MB/s`
+}
+
+export function formatUptime(sec) {
+  if (sec == null || Number.isNaN(Number(sec))) return null
+  let s = Math.max(0, Math.floor(Number(sec)))
+  const d = Math.floor(s / 86400)
+  s %= 86400
+  const h = Math.floor(s / 3600)
+  s %= 3600
+  const m = Math.floor(s / 60)
+  if (d > 0) return `${d}天${h}小时`
+  if (h > 0) return `${h}小时${m}分`
+  return `${m}分`
+}
+
 /** Compact container memory, e.g. 300M / 1.2G. */
 export function formatMemShort(n) {
   if (n == null || Number.isNaN(Number(n))) return '—'

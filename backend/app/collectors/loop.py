@@ -122,6 +122,12 @@ class CollectorLoop:
         ]
         if host.get("temps_c", {}).get("cpu") is not None:
             points.append((ts, "temp.cpu", float(host["temps_c"]["cpu"]), None))
+        if host.get("swap_used_pct") is not None:
+            points.append((ts, "swap.used_pct", float(host["swap_used_pct"]), None))
+        if host.get("net_up_bps") is not None:
+            points.append((ts, "net.up_bps", float(host["net_up_bps"]), None))
+        if host.get("net_down_bps") is not None:
+            points.append((ts, "net.down_bps", float(host["net_down_bps"]), None))
         for fs in filesystems:
             points.append(
                 (
