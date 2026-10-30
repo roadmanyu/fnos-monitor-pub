@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api } from '../api/client'
 import {
   clampPct,
@@ -13,18 +13,24 @@ import {
 
 const snap = ref(null)
 const meta = ref(null)
-const cpuHist = ref([])
-const memHist = ref([])
+const hist = ref({ cpu: [], mem: [], load: [], temp: [] })
 const alerts = ref([])
 const containers = ref([])
 const err = ref('')
 const now = ref(new Date())
+const tempsOpen = ref(false)
+const topMetric = ref('cpu')
+const seriesOn = reactive({ cpu: true, mem: true, load: false, temp: false })
 let poll
 let clock
 
 const tz = computed(() => meta.value?.timezone_display || 'Asia/Shanghai')
 const host = computed(() => snap.value?.host || {})
-const filesystems = computed(() => snap.value?.filesystems || [])
+const filesystems = computed(() => {
+  return [...(snap.value?.filesystems || [])].sort(
+    (a, b) => (Number(b.used_pct) || 0) - (Number(a.used_pct) || 0)
+  )
+})
 const disks = computed(() => snap.value?.disks_smart_summary || [])
 const cpuTemp = computed(() => host.value?.temps_c?.cpu ?? null)
 
@@ -53,28 +59,97 @@ const loadState = computed(() => {
   return { text: '负载正常', cls: 'ok' }
 })
 
-const sortedContainers = computed(() => {
-  return [...containers.value].sort((a, b) => {
-    const ar = (a.state || '').toLowerCase() === 'running' ? 0 : 1
-    const br = (b.state || '').toLowerCase() === 'running' ? 0 : 1
-    if (ar !== br) return ar - br
-    return String(a.name || '').localeCompare(String(b.name || ''))
+const dockerSummary = computed(() => {
+  const d = snap.value?.docker || {}
+  return {
+    running: Number(d.running) || 0,
+    stopped: Number(d.stopped) || 0,
+    total: Number(d.total) || 0
+  }
+})
+
+const dockerDown = computed(() => {
+  const d = snap.value?.docker
+  if (d && d.stopped != null) return Number(d.stopped) || 0
+  return containers.value.filter((c) => (c.state || '').toLowerCase() !== 'running').length
+})
+
+const topContainers = computed(() => {
+  const ranked = [...containers.value].sort((a, b) => {
+    if (topMetric.value === 'mem') {
+      return (Number(b.mem_usage_bytes) || -1) - (Number(a.mem_usage_bytes) || -1)
+    }
+    return (Number(b.cpu_pct) || -1) - (Number(a.cpu_pct) || -1)
   })
+  return ranked.slice(0, 5).map((c, i) => ({
+    ...c,
+    rank: i + 1,
+    hot: Number(c.cpu_pct) >= 50
+  }))
 })
 
-const dockerAllOk = computed(() => {
-  if (!containers.value.length) return null
-  return containers.value.every((c) => (c.state || '').toLowerCase() === 'running')
+const recentAlerts = computed(() => alerts.value.slice(0, 5))
+
+const unackedCount = computed(() => alerts.value.filter((a) => !a.acked).length)
+
+const diskRollup = computed(() => {
+  let ok = 0
+  let fail = 0
+  let standby = 0
+  let hot = null
+  for (const d of disks.value) {
+    if (d.skipped_standby) standby += 1
+    else if (d.healthy === false) fail += 1
+    else if (d.healthy === true) ok += 1
+    if (d.temp_c != null && !Number.isNaN(Number(d.temp_c))) {
+      const t = Number(d.temp_c)
+      if (hot == null || t > hot) hot = t
+    }
+  }
+  return { ok, fail, standby, hot }
 })
 
-const trend = computed(() => buildTrend(cpuHist.value, memHist.value))
+const smartFail = computed(() => diskRollup.value.fail)
+
+const otherTemps = computed(() => {
+  const other = host.value?.temps_c?.other
+  if (!other || typeof other !== 'object') return []
+  return Object.entries(other)
+    .filter(([, v]) => v != null && !Number.isNaN(Number(v)))
+    .map(([key, value]) => ({ key, value }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+})
+
+const ageSec = computed(() => {
+  const iso = meta.value?.last_collect_ts || snap.value?.ts
+  if (!iso) return null
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return null
+  return Math.max(0, Math.floor((now.value.getTime() - t) / 1000))
+})
+
+const collectStale = computed(() => {
+  if (ageSec.value == null) return false
+  const interval = Number(meta.value?.collect_interval_sec)
+  const limit = Number.isFinite(interval) && interval > 0 ? interval : 30
+  return ageSec.value > limit * 2
+})
+
+const ageText = computed(() => (ageSec.value == null ? '—' : `${ageSec.value} 秒前更新`))
+
+const healthReady = computed(() => !!snap.value?.ts)
+const healthOk = computed(() => (
+  healthReady.value && unackedCount.value === 0 && smartFail.value === 0 && dockerDown.value === 0
+))
+
+const trend = computed(() => buildTrend(hist.value, seriesOn))
 
 async function load() {
   try {
     const [m, s, a] = await Promise.all([
       api('/meta'),
       api('/metrics/snapshot'),
-      api('/alerts?limit=3').then((r) => r.items || [])
+      api('/alerts?limit=200').then((r) => r.items || [])
     ])
     meta.value = m
     snap.value = s
@@ -83,17 +158,36 @@ async function load() {
   } catch (e) {
     err.value = e.message || '加载失败'
   }
+  const [cpu, mem, load, temp, dock] = await Promise.all([
+    safeHist('cpu.pct'),
+    safeHist('mem.used_pct'),
+    safeHist('load1'),
+    safeHist('temp.cpu'),
+    safeJson('/docker/containers')
+  ])
+  hist.value = {
+    cpu: cpu ?? hist.value.cpu,
+    mem: mem ?? hist.value.mem,
+    load: load ?? hist.value.load,
+    temp: temp ?? hist.value.temp
+  }
+  if (dock) containers.value = dock.containers || []
+}
+
+async function safeHist(metric) {
   try {
-    const [cpu, mem, dock] = await Promise.all([
-      api('/metrics/history?metric=cpu.pct&step=60'),
-      api('/metrics/history?metric=mem.used_pct&step=60'),
-      api('/docker/containers')
-    ])
-    cpuHist.value = cpu.points || []
-    memHist.value = mem.points || []
-    containers.value = dock.containers || []
-  } catch (e) {
-    if (!err.value) err.value = e.message || '加载失败'
+    const r = await api(`/metrics/history?metric=${encodeURIComponent(metric)}&step=60`)
+    return r.points || []
+  } catch {
+    return null
+  }
+}
+
+async function safeJson(path) {
+  try {
+    return await api(path)
+  } catch {
+    return null
   }
 }
 
@@ -129,43 +223,56 @@ onUnmounted(() => {
   clearInterval(clock)
 })
 
-function buildTrend(cpuPoints, memPoints) {
+const TREND_SERIES = [
+  { key: 'cpu', color: '#2ec9c0' },
+  { key: 'mem', color: '#f062b0' },
+  { key: 'load', color: '#f5b14a' },
+  { key: 'temp', color: '#f08a3a' }
+]
+
+function buildTrend(series, enabled) {
   const w = 320
   const h = 112
-  const memMap = new Map((memPoints || []).map((p) => [p.ts, Number(p.value)]))
-  let rows = (cpuPoints || []).map((p) => ({
-    cpu: Number(p.value),
-    mem: memMap.has(p.ts) ? memMap.get(p.ts) : null
-  }))
-  if (!rows.length && (memPoints || []).length) {
-    rows = memPoints.map((p) => ({ cpu: null, mem: Number(p.value) }))
+  const paths = []
+  for (const spec of TREND_SERIES) {
+    if (!enabled[spec.key]) continue
+    const values = (series[spec.key] || [])
+      .map((p) => Number(p.value))
+      .filter((v) => !Number.isNaN(v))
+    if (!values.length) continue
+    const d = linePath(values, w, h, trendDomain(spec.key, values))
+    if (d) paths.push({ key: spec.key, color: spec.color, d })
   }
-  const cpuLine = linePath(rows.map((r) => r.cpu), w, h)
+  const first = paths[0]
   return {
-    has: rows.some((r) => r.cpu != null || r.mem != null),
-    cpu: cpuLine,
-    mem: linePath(rows.map((r) => r.mem), w, h),
-    area: cpuLine ? `${cpuLine} L ${w} ${h} L 0 ${h} Z` : ''
+    has: paths.length > 0,
+    paths,
+    area: first ? `${first.d} L ${w} ${h} L 0 ${h} Z` : '',
+    areaColor: first?.color || '#2ec9c0'
   }
 }
 
-function linePath(values, w, h) {
+function trendDomain(key, values) {
+  const peak = values.reduce((m, v) => Math.max(m, v), 0)
+  if (key === 'cpu' || key === 'mem') return 100
+  if (key === 'load') return Math.max(1, peak * 1.25)
+  return Math.max(100, peak)
+}
+
+function linePath(values, w, h, domainMax) {
   const n = values.length
-  const pts = values
-    .map((v, i) => ({ v: Number(v), i }))
-    .filter((p) => p.v != null && !Number.isNaN(p.v))
-  if (!pts.length || !n) return ''
-  const yOf = (v) => h - (clampPct(v) / 100) * (h - 10) - 4
-  if (pts.length === 1) {
-    const y = yOf(pts[0].v).toFixed(1)
+  const max = domainMax > 0 ? domainMax : 1
+  const yOf = (v) => h - (Math.max(0, Math.min(max, v)) / max) * (h - 10) - 4
+  if (!n) return ''
+  if (n === 1) {
+    const y = yOf(values[0]).toFixed(1)
     return `M0 ${y} L${w} ${y}`
   }
-  return pts
-    .map((p) => {
-      const x = (p.i / (n - 1)) * w
-      return [x, yOf(p.v)]
+  return values
+    .map((v, i) => {
+      const x = (i / (n - 1)) * w
+      return `${i ? 'L' : 'M'}${x.toFixed(1)} ${yOf(v).toFixed(1)}`
     })
-    .map((c, i) => `${i ? 'L' : 'M'}${c[0].toFixed(1)} ${c[1].toFixed(1)}`)
     .join(' ')
 }
 </script>
@@ -176,7 +283,7 @@ function linePath(values, w, h) {
     <p v-else-if="!snap" class="muted">正在加载…</p>
 
     <div class="modules">
-      <section class="card mod">
+      <section class="card mod span-3">
         <header class="mod-head">
           <span class="mid">M01</span>
           <span class="mod-title">系统</span>
@@ -212,8 +319,8 @@ function linePath(values, w, h) {
             <b>{{ host.load1 ?? '—' }} · 5m {{ host.load5 ?? '—' }}</b>
           </div>
           <div class="fact">
-            <span>采集</span>
-            <b>{{ formatTs(meta?.last_collect_ts || snap?.ts, tz) }}</b>
+            <span>更新</span>
+            <b class="age" :class="{ stale: collectStale }" :title="formatTs(meta?.last_collect_ts || snap?.ts, tz)">{{ ageText }}</b>
           </div>
           <div class="fact">
             <span>版本</span>
@@ -222,7 +329,7 @@ function linePath(values, w, h) {
         </div>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-3">
         <header class="mod-head">
           <span class="mid">M02</span>
           <span class="mod-title">资源</span>
@@ -253,7 +360,7 @@ function linePath(values, w, h) {
         </div>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-3">
         <header class="mod-head">
           <span class="mid">M03</span>
           <span class="mod-title">趋势</span>
@@ -261,26 +368,38 @@ function linePath(values, w, h) {
         </header>
         <div v-if="trend.has" class="trend-wrap">
           <svg viewBox="0 0 320 112" class="trend" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="cpuFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#2ec9c0" stop-opacity="0.32" />
-                <stop offset="100%" stop-color="#2ec9c0" stop-opacity="0.02" />
-              </linearGradient>
-            </defs>
             <line v-for="i in 3" :key="i" x1="0" :y1="i * 28" x2="320" :y2="i * 28" stroke="#eef1f4" />
-            <path :d="trend.area" fill="url(#cpuFill)" stroke="none" />
-            <path :d="trend.mem" fill="none" stroke="#f062b0" stroke-width="2" vector-effect="non-scaling-stroke" />
-            <path :d="trend.cpu" fill="none" stroke="#2ec9c0" stroke-width="2.2" vector-effect="non-scaling-stroke" />
+            <path v-if="trend.area" :d="trend.area" :fill="trend.areaColor" fill-opacity="0.16" stroke="none" />
+            <path
+              v-for="p in trend.paths"
+              :key="p.key"
+              :d="p.d"
+              fill="none"
+              :stroke="p.color"
+              stroke-width="2.2"
+              vector-effect="non-scaling-stroke"
+            />
           </svg>
         </div>
         <div v-else class="empty">暂无趋势数据</div>
         <div class="legend">
-          <span><i class="swatch cpu"></i>CPU {{ formatPct(host.cpu_pct) }}%</span>
-          <span><i class="swatch mem"></i>MEM {{ formatPct(host.mem_used_pct) }}%</span>
+          <button type="button" class="chip" :class="{ on: seriesOn.cpu }" @click="seriesOn.cpu = !seriesOn.cpu">
+            <i class="swatch cpu"></i>CPU {{ formatPct(host.cpu_pct) }}%
+          </button>
+          <button type="button" class="chip" :class="{ on: seriesOn.mem }" @click="seriesOn.mem = !seriesOn.mem">
+            <i class="swatch mem"></i>内存 {{ formatPct(host.mem_used_pct) }}%
+          </button>
+          <button type="button" class="chip" :class="{ on: seriesOn.load }" @click="seriesOn.load = !seriesOn.load">
+            <i class="swatch load"></i>负载 {{ host.load1 ?? '—' }}
+          </button>
+          <button type="button" class="chip" :class="{ on: seriesOn.temp }" @click="seriesOn.temp = !seriesOn.temp">
+            <i class="swatch temp"></i>温度 {{ cpuTemp != null ? cpuTemp + '°C' : '—' }}
+          </button>
         </div>
+        <p v-if="seriesOn.load || seriesOn.temp" class="scale-note">负载、温度按各自刻度绘制，不与百分比共用一轴。</p>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-3">
         <header class="mod-head">
           <span class="mid">M04</span>
           <span class="mod-title">网络</span>
@@ -298,7 +417,7 @@ function linePath(values, w, h) {
         <div class="empty grow">暂无数据</div>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-4">
         <header class="mod-head">
           <span class="mid">M05</span>
           <span class="mod-title">CPU</span>
@@ -329,26 +448,88 @@ function linePath(values, w, h) {
               <span>1m {{ host.load1 ?? '—' }}</span>
               <span>5m {{ host.load5 ?? '—' }}</span>
             </div>
+            <button
+              type="button"
+              class="fold"
+              :disabled="!otherTemps.length"
+              @click="tempsOpen = !tempsOpen"
+            >
+              其它温度 {{ otherTemps.length ? otherTemps.length : '暂无数据' }}
+              <span v-if="otherTemps.length">{{ tempsOpen ? '收起' : '展开' }}</span>
+            </button>
+            <ul v-if="tempsOpen && otherTemps.length" class="temp-list">
+              <li v-for="t in otherTemps" :key="t.key">
+                <span>{{ t.key }}</span>
+                <b>{{ t.value }}°C</b>
+              </li>
+            </ul>
           </div>
         </div>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-8">
+        <header class="mod-head">
+          <span class="mid">M10</span>
+          <span class="mod-title">健康</span>
+          <span v-if="healthReady" class="pill head-pill push" :class="healthOk ? 'ok' : 'warn'">
+            <i class="dot"></i>{{ healthOk ? '全部正常' : '有问题' }}
+          </span>
+        </header>
+        <div class="health-row">
+          <router-link class="health-cell" to="/alerts">
+            <div class="k">未确认告警</div>
+            <b :class="{ bad: unackedCount > 0 }">{{ healthReady ? unackedCount : '—' }}</b>
+          </router-link>
+          <router-link class="health-cell" to="/disks">
+            <div class="k">SMART 失败</div>
+            <b :class="{ bad: smartFail > 0 }">{{ healthReady ? smartFail : '—' }}</b>
+          </router-link>
+          <router-link class="health-cell" to="/docker">
+            <div class="k">容器未运行</div>
+            <b :class="{ warn: dockerDown > 0 }">{{ healthReady ? dockerDown : '—' }}</b>
+          </router-link>
+        </div>
+      </section>
+
+      <section class="card mod span-7">
         <header class="mod-head">
           <span class="mid">M07</span>
           <span class="mod-title">Docker</span>
-          <span class="pill muted head-pill push">{{ containers.length }} CTN</span>
-          <span v-if="dockerAllOk === true" class="pill ok head-pill"><i class="dot"></i>全部正常</span>
-          <span v-else-if="dockerAllOk === false" class="pill warn head-pill">有容器未运行</span>
-          <router-link class="mod-link" to="/docker">全部</router-link>
+          <router-link class="mod-link push" to="/docker">全部</router-link>
         </header>
-        <div v-if="sortedContainers.length" class="ctr-list">
+        <div class="sum-row">
+          <div class="sum">
+            <b>{{ dockerSummary.running }}</b>
+            <span>运行</span>
+          </div>
+          <div class="sum" :class="{ stop: dockerSummary.stopped > 0 }">
+            <b>{{ dockerSummary.stopped }}</b>
+            <span>停止</span>
+          </div>
+          <div class="sum">
+            <b>{{ dockerSummary.total }}</b>
+            <span>合计</span>
+          </div>
+        </div>
+        <div class="top-switch">
+          <span class="k">资源 Top</span>
+          <button type="button" class="chip" :class="{ on: topMetric === 'cpu' }" @click="topMetric = 'cpu'">按 CPU</button>
+          <button type="button" class="chip" :class="{ on: topMetric === 'mem' }" @click="topMetric = 'mem'">按内存</button>
+        </div>
+        <div v-if="topContainers.length" class="ctr-list">
           <div class="ctr ctr-head">
-            <span></span><span></span>
+            <span></span><span></span><span></span>
             <span class="stat">CPU</span>
             <span class="stat">MEM</span>
           </div>
-          <div v-for="c in sortedContainers" :key="c.id" class="ctr" :title="c.image || c.status">
+          <div
+            v-for="c in topContainers"
+            :key="c.id"
+            class="ctr"
+            :class="{ hot: c.hot }"
+            :title="c.image || c.status"
+          >
+            <span class="rank">{{ c.rank }}</span>
             <i class="ctr-dot" :class="ctrDot(c.state)"></i>
             <span class="name">{{ c.name }}</span>
             <span class="stat">{{ c.cpu_pct != null ? formatPct(c.cpu_pct) + '%' : '—' }}</span>
@@ -358,11 +539,11 @@ function linePath(values, w, h) {
         <div v-else class="empty">暂无数据</div>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-5">
         <header class="mod-head">
           <span class="mid">M08</span>
           <span class="mod-title">存储池</span>
-          <span class="io-note push">读写 暂无数据</span>
+          <span class="io-note push">按使用率 · 读写暂无数据</span>
           <router-link class="mod-link" to="/disks">全部</router-link>
         </header>
         <div v-if="filesystems.length" class="pool-row">
@@ -373,17 +554,22 @@ function linePath(values, w, h) {
               <span>/ {{ formatBytes(fs.total_bytes) }}</span>
             </div>
             <div class="seg sm" :class="barColor(fs.used_pct)" :style="{ '--p': clampPct(fs.used_pct) + '%' }"></div>
-            <div class="pool-pct">{{ formatPct(fs.used_pct, 0) }}%</div>
+            <div class="pool-pct" :class="barColor(fs.used_pct)">{{ formatPct(fs.used_pct, 0) }}%</div>
           </div>
         </div>
         <div v-else class="empty">暂无挂载数据</div>
       </section>
 
-      <section class="card mod">
+      <section class="card mod span-12">
         <header class="mod-head">
           <span class="mid">M09</span>
           <span class="mod-title">硬盘</span>
-          <span class="pill muted head-pill push">{{ disks.length }} DISKS</span>
+          <span class="health-sum push">
+            OK {{ diskRollup.ok }}
+            · FAIL <em :class="{ bad: diskRollup.fail > 0 }">{{ diskRollup.fail }}</em>
+            · STANDBY {{ diskRollup.standby }}
+            · 最热 {{ diskRollup.hot != null ? diskRollup.hot + '°C' : '—' }}
+          </span>
         </header>
         <div v-if="disks.length" class="disk-row">
           <article v-for="d in disks" :key="d.id" class="disk">
@@ -399,15 +585,16 @@ function linePath(values, w, h) {
         <div v-else class="empty">暂无数据</div>
       </section>
 
-      <section class="card mod alerts">
+      <section class="card mod span-12 alerts">
         <header class="mod-head">
           <span class="mod-title">最近告警</span>
           <router-link class="mod-link push" to="/alerts">全部</router-link>
         </header>
-        <div v-if="alerts.length" class="alert-list">
-          <div v-for="a in alerts" :key="a.id" class="alert-row">
+        <div v-if="recentAlerts.length" class="alert-list">
+          <div v-for="a in recentAlerts" :key="a.id" class="alert-row">
             <span class="badge" :class="a.severity === 'critical' ? 'crit' : 'warn'">{{ a.severity }}</span>
             <span class="alert-title">{{ a.title }}</span>
+            <span v-if="a.acked" class="badge muted">已确认</span>
             <span class="muted">{{ a.message }}</span>
           </div>
         </div>
@@ -439,16 +626,12 @@ function linePath(values, w, h) {
   gap: 10px;
 }
 
-.modules > .mod:nth-child(1),
-.modules > .mod:nth-child(2),
-.modules > .mod:nth-child(3),
-.modules > .mod:nth-child(4) { grid-column: span 3; }
-
-.modules > .mod:nth-child(5) { grid-column: span 4; }
-.modules > .mod:nth-child(6) { grid-column: span 8; }
-.modules > .mod:nth-child(7) { grid-column: span 7; }
-.modules > .mod:nth-child(8) { grid-column: span 5; }
-.modules > .mod:nth-child(9) { grid-column: span 12; }
+.span-3 { grid-column: span 3; }
+.span-4 { grid-column: span 4; }
+.span-5 { grid-column: span 5; }
+.span-7 { grid-column: span 7; }
+.span-8 { grid-column: span 8; }
+.span-12 { grid-column: span 12; }
 
 .mod-head {
   display: flex;
@@ -613,6 +796,30 @@ function linePath(values, w, h) {
 .swatch { width: 14px; height: 4px; border-radius: 99px; display: inline-block; }
 .swatch.cpu { background: #2ec9c0; }
 .swatch.mem { background: #f062b0; }
+.swatch.load { background: #f5b14a; }
+.swatch.temp { background: #f08a3a; }
+.chip {
+  border: 0;
+  background: #f4f6f8;
+  color: #607086;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.78rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chip.on { background: #e7f6f4; color: var(--teal-ink); }
+.scale-note { margin: 0; color: #9aa3b2; font-size: 0.72rem; }
+.age.stale {
+  color: #b45309;
+  background: var(--warn-bg);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
 
 .net-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .net-v {
@@ -676,6 +883,78 @@ function linePath(values, w, h) {
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
+.fold {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0;
+  cursor: pointer;
+}
+.fold:disabled { cursor: default; }
+.fold span { margin-left: 6px; color: var(--teal-ink); }
+.temp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.temp-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+.temp-list span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.temp-list b { font-variant-numeric: tabular-nums; }
+.health-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.health-cell {
+  background: #f6f8fa;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: inherit;
+  display: grid;
+  gap: 4px;
+}
+.health-cell b {
+  font-size: 1.7rem;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.health-cell b.bad { color: var(--crit); }
+.health-cell b.warn { color: #b45309; }
+.sum-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.sum {
+  background: #f6f8fa;
+  border-radius: 14px;
+  padding: 8px 12px;
+}
+.sum b {
+  display: block;
+  font-size: 1.55rem;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.sum span { color: var(--muted); font-size: 0.75rem; font-weight: 700; }
+.sum.stop b { color: var(--crit); }
+.top-switch { display: flex; align-items: center; gap: 8px; }
+.health-sum {
+  color: #607086;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.health-sum em { font-style: normal; }
+.health-sum .bad { color: var(--crit); }
 
 .ctr-list {
   overflow: auto;
@@ -685,11 +964,19 @@ function linePath(values, w, h) {
 }
 .ctr {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) 64px 56px;
+  grid-template-columns: 18px 12px minmax(0, 1fr) 64px 56px;
   gap: 8px;
   align-items: center;
   padding: 5px 2px;
   font-size: 0.92rem;
+  border-radius: 8px;
+}
+.ctr.hot { background: #fff6e8; }
+.rank {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #9aa3b2;
+  text-align: center;
 }
 .ctr-dot {
   width: 8px;
@@ -715,6 +1002,8 @@ function linePath(values, w, h) {
 .pool-fig { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
 .pool-fig b { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
 .pool-fig span, .pool-pct { color: var(--muted); font-size: 0.82rem; }
+.pool-pct.warn { color: #b45309; font-weight: 800; }
+.pool-pct.crit { color: var(--crit); font-weight: 800; }
 
 .disk-row {
   display: flex;
@@ -767,18 +1056,14 @@ function linePath(values, w, h) {
 .empty-inline { margin: 0; }
 
 @media (max-width: 1100px) {
-  .modules > .mod:nth-child(1),
-  .modules > .mod:nth-child(2),
-  .modules > .mod:nth-child(3),
-  .modules > .mod:nth-child(4),
-  .modules > .mod:nth-child(5) { grid-column: span 6; }
-  .modules > .mod:nth-child(6),
-  .modules > .mod:nth-child(7),
-  .modules > .mod:nth-child(8) { grid-column: span 12; }
+  .span-3, .span-4 { grid-column: span 6; }
+  .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
+  .health-sum { text-align: left; }
 }
 
 @media (max-width: 720px) {
-  .modules > .mod { grid-column: span 12 !important; }
+  .span-3, .span-4, .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
   .clock { font-size: 2.3rem; }
+  .health-row, .sum-row { grid-template-columns: 1fr; }
 }
 </style>
