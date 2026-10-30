@@ -1280,18 +1280,35 @@ function linePath(values, w, h, domainMax) {
 .empty-inline { margin: 0; }
 
 @media (min-width: 1200px) {
-  .modules { gap: 12px; }
+  .modules { gap: 14px; }
+  .id-card { padding: 20px 28px 16px; }
+  .id-card .mod-title { font-size: 1.2rem; }
+  .id-card .pill { font-size: 1.2rem; padding: 8px 18px; }
+  .id-name { font-size: clamp(3.4rem, 4.8vw, 5.4rem); }
+  .id-fresh { font-size: 1.65rem; font-weight: 650; }
+  .id-host { font-size: 1.25rem; }
+  .id-clock { margin-top: 18px; padding-top: 16px; font-size: 1.35rem; }
+  .id-time { font-size: clamp(2.6rem, 3.4vw, 3.8rem); }
+  .id-card .facts { gap: 0; margin-top: 6px; }
+  .id-card .fact {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .id-card .fact:last-child { border-bottom: 0; }
+  .id-card .fact span { font-size: 1.2rem; font-weight: 700; }
+  .id-card .fact b { font-size: clamp(1.55rem, 2vw, 2.15rem); font-weight: 700; }
+  .id-ver { font-size: 1rem; margin-top: 4px; }
+  .metric-top b { font-size: 1.7rem; }
+  .health-cell b, .sum b { font-size: 2.15rem; }
 }
 
 @media (min-width: 1200px) and (max-height: 860px) {
   .modules { gap: 10px; }
-  .mod { gap: 6px; padding: 12px 14px; }
-  .id-name { font-size: 2.25rem; }
-  .id-time { font-size: 1.35rem; }
-  .clock { font-size: 2.15rem; }
-  .trend { height: 100px; }
-  .net-svg { height: 56px; }
-  .empty.grow { min-height: 72px; }
+  .mod { gap: 8px; }
+  .trend { height: 112px; }
+  .net-svg { height: 72px; }
+  .empty.grow { min-height: 88px; }
+  .id-card .fact { padding: 10px 0; }
 }
 
 @media (max-width: 1199px) {
