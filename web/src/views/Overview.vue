@@ -393,7 +393,7 @@ function linePath(values, w, h, domainMax) {
     <p v-else-if="!snap" class="muted">正在加载…</p>
 
     <div class="modules">
-      <section class="card mod span-3 id-card">
+      <section class="card mod span-12 id-card">
         <header class="mod-head">
           <span class="mid">M01</span>
           <span class="mod-title">系统</span>
@@ -401,14 +401,17 @@ function linePath(values, w, h, domainMax) {
             <i class="dot"></i>{{ hostStatus.text }}
           </span>
         </header>
+        <div class="id-body">
+        <div class="id-lead">
         <div class="id-hero">
           <div class="id-name">{{ heroName }}</div>
           <div v-if="heroHost" class="id-host">{{ heroHost }}</div>
           <div class="id-fresh">{{ cadenceText }}</div>
         </div>
         <div class="id-clock">
-          <span>{{ clockText }}</span>
+          <span class="id-time">{{ clockText }}</span>
           <span>{{ dateText }}</span>
+        </div>
         </div>
         <div class="facts">
           <div class="fact">
@@ -435,6 +438,7 @@ function linePath(values, w, h, domainMax) {
             <span>GPU</span>
             <b class="clip" :title="host.gpu_model || ''">{{ host.gpu_model || '—' }}</b>
           </div>
+        </div>
         </div>
         <div class="id-ver">v{{ meta?.app_version || '—' }}</div>
       </section>
@@ -809,34 +813,56 @@ function linePath(values, w, h, domainMax) {
   font-size: 0.86rem;
 }
 
-.id-hero { display: grid; gap: 2px; }
+.id-body {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.85fr) minmax(0, 2.15fr);
+  gap: 16px 36px;
+  align-items: end;
+}
+.id-card .mod-title { font-size: 1.05rem; }
+.id-card .pill { font-size: 0.95rem; padding: 5px 12px; }
+.id-hero { display: grid; gap: 4px; }
 .id-name {
-  font-size: 1.65rem;
-  line-height: 1.1;
+  font-size: 2.6rem;
+  line-height: 1.05;
   font-weight: 700;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.04em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.id-host { color: var(--muted); font-size: 0.8rem; }
-.id-fresh { color: var(--muted); font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+.id-host { color: var(--muted); font-size: 1.05rem; }
+.id-fresh { color: var(--muted); font-size: 1.2rem; font-variant-numeric: tabular-nums; }
 .id-fresh.stale { color: #b45309; font-weight: 700; }
 .id-clock {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
   align-items: baseline;
-  padding-top: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
   color: #607086;
-  font-size: 0.92rem;
+  font-size: 1.05rem;
   font-variant-numeric: tabular-nums;
 }
+.id-time { font-size: 1.55rem; font-weight: 650; color: var(--ink); letter-spacing: -0.03em; }
+.id-card .facts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 32px;
+}
+.id-card .fact {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.id-card .fact span { font-size: 0.95rem; }
+.id-card .fact b { font-size: 1.25rem; text-align: left; }
+.id-card .fact b.clip { white-space: normal; }
 .id-ver {
-  margin-top: auto;
+  margin-top: 8px;
   color: #9aa3b2;
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
 }
 .fact b.clip {
@@ -1260,7 +1286,8 @@ function linePath(values, w, h, domainMax) {
 @media (min-width: 1200px) and (max-height: 860px) {
   .modules { gap: 10px; }
   .mod { gap: 6px; padding: 12px 14px; }
-  .id-name { font-size: 1.4rem; }
+  .id-name { font-size: 2.25rem; }
+  .id-time { font-size: 1.35rem; }
   .clock { font-size: 2.15rem; }
   .trend { height: 100px; }
   .net-svg { height: 56px; }
@@ -1276,8 +1303,15 @@ function linePath(values, w, h, domainMax) {
 @media (max-width: 720px) {
   .span-3, .span-4, .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
   .mid, .io-note { display: none; }
-  .id-name { font-size: 1.85rem; }
-  .id-clock { font-size: 1rem; }
+  .id-body, .id-card .facts { grid-template-columns: 1fr; }
+  .id-name { font-size: 2rem; }
+  .id-fresh { font-size: 1.05rem; }
+  .id-time { font-size: 1.25rem; }
+  .id-clock { font-size: 0.95rem; margin-top: 8px; }
+  .id-card .fact { flex-direction: row; align-items: baseline; }
+  .id-card .fact b { font-size: 1.05rem; text-align: right; }
+  .id-card .fact b.clip { white-space: nowrap; }
+  .id-card .fact span { font-size: 0.85rem; }
   .clock { font-size: 2.7rem; }
   .trend { height: 180px; }
   .net-svg { height: 128px; }
