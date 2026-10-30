@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api/client'
-import { nas, rememberLocalName } from '../nas/profiles'
+import { activeProfile, nas, rememberLocalName } from '../nas/profiles'
 import Alerts from './Alerts.vue'
 import Disks from './Disks.vue'
 import Docker from './Docker.vue'
@@ -46,6 +46,19 @@ const disks = computed(() => snap.value?.disks_smart_summary || [])
 const cpuTemp = computed(() => host.value?.temps_c?.cpu ?? null)
 const cores = computed(() => (Array.isArray(host.value?.cpu_cores) ? host.value.cpu_cores : []))
 const uptimeText = computed(() => formatUptime(host.value?.uptime_sec))
+const heroName = computed(() => activeProfile()?.name || meta.value?.hostname || '—')
+const heroHost = computed(() => {
+  const tab = activeProfile()?.name
+  const hostName = meta.value?.hostname
+  if (tab && hostName && tab !== hostName) return hostName
+  return ''
+})
+const hostStatus = computed(() => {
+  if (!snap.value?.ts) return { text: '离线', cls: 'muted' }
+  if (meta.value?.mock_mode) return { text: '模拟数据', cls: 'warn' }
+  if (collectStale.value) return { text: '采集延迟', cls: 'warn' }
+  return { text: '在线', cls: 'ok' }
+})
 const swapKnown = computed(() => host.value?.swap_total_bytes != null)
 const netKnown = computed(() => host.value && Object.prototype.hasOwnProperty.call(host.value, 'net_up_bps'))
 const diskIoText = computed(() => {
@@ -367,54 +380,54 @@ function linePath(values, w, h, domainMax) {
     <p v-else-if="!snap" class="muted">正在加载…</p>
 
     <div class="modules">
-      <section class="card mod span-3">
+      <section class="card mod span-3 id-card">
         <header class="mod-head">
           <span class="mid">M01</span>
           <span class="mod-title">系统</span>
+          <span class="pill head-pill push" :class="hostStatus.cls">
+            <i class="dot"></i>{{ hostStatus.text }}
+          </span>
         </header>
-        <div class="date">{{ dateText }}</div>
-        <div class="clock">{{ clockText }}</div>
-        <div class="subhero">
-          <template v-if="cpuTemp != null">
-            <b>{{ cpuTemp }}°C</b>
-            <span>CPU 温度</span>
-          </template>
-          <span v-else class="muted">CPU 温度 —</span>
+        <div class="id-hero">
+          <div class="id-name">{{ heroName }}</div>
+          <div v-if="heroHost" class="id-host">{{ heroHost }}</div>
+          <div
+            class="id-fresh"
+            :class="{ stale: collectStale }"
+            :title="formatTs(meta?.last_collect_ts || snap?.ts, tz)"
+          >{{ ageText }}</div>
         </div>
-        <div class="node-line">
-          <div>
-            <div class="k">NODE</div>
-            <div class="node-name">{{ meta?.hostname || '—' }}</div>
-          </div>
-          <div class="pills">
-            <span class="pill" :class="snap?.ts ? 'ok' : 'muted'">
-              <i class="dot"></i>{{ snap?.ts ? '在线' : '离线' }}
-            </span>
-            <span v-if="meta?.mock_mode" class="pill warn">模拟数据</span>
-          </div>
+        <div class="id-clock">
+          <span>{{ clockText }}</span>
+          <span>{{ dateText }}</span>
         </div>
         <div class="facts">
           <div class="fact">
-            <span>内存</span>
-            <b>{{ formatBytes(host.mem_used_bytes) }} / {{ formatBytes(host.mem_total_bytes) }}</b>
+            <span>系统</span>
+            <b class="clip">{{ host.os || '—' }}<template v-if="host.arch"> · {{ host.arch }}</template></b>
           </div>
           <div class="fact">
-            <span>负载</span>
-            <b>{{ host.load1 ?? '—' }} · 5m {{ host.load5 ?? '—' }}</b>
+            <span>CPU</span>
+            <b class="clip" :title="host.cpu_model || ''">{{ host.cpu_model || '—' }}</b>
           </div>
-          <div v-if="uptimeText" class="fact">
+          <div class="fact">
             <span>运行</span>
-            <b>{{ uptimeText }}</b>
+            <b>{{ uptimeText || '—' }}</b>
           </div>
           <div class="fact">
-            <span>更新</span>
-            <b class="age" :class="{ stale: collectStale }" :title="formatTs(meta?.last_collect_ts || snap?.ts, tz)">{{ ageText }}</b>
+            <span>局域网</span>
+            <b>{{ host.lan_ipv4 || '—' }}</b>
           </div>
           <div class="fact">
-            <span>版本</span>
-            <b>{{ meta?.app_version || '—' }}</b>
+            <span>公网</span>
+            <b>{{ host.public_ipv4 || '—' }}</b>
+          </div>
+          <div v-if="host.gpu_model" class="fact">
+            <span>GPU</span>
+            <b class="clip" :title="host.gpu_model">{{ host.gpu_model }}</b>
           </div>
         </div>
+        <div class="id-ver">v{{ meta?.app_version || '—' }}</div>
       </section>
 
       <section class="card mod span-3">
@@ -785,6 +798,43 @@ function linePath(values, w, h, domainMax) {
 .date {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.id-hero { display: grid; gap: 2px; }
+.id-name {
+  font-size: 1.65rem;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-host { color: var(--muted); font-size: 0.8rem; }
+.id-fresh { color: var(--muted); font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+.id-fresh.stale { color: #b45309; font-weight: 700; }
+.id-clock {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: #607086;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+}
+.id-ver {
+  margin-top: auto;
+  color: #9aa3b2;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+.fact b.clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .clock {
@@ -1201,6 +1251,7 @@ function linePath(values, w, h, domainMax) {
 @media (min-width: 1200px) and (max-height: 860px) {
   .modules { gap: 10px; }
   .mod { gap: 6px; padding: 12px 14px; }
+  .id-name { font-size: 1.4rem; }
   .clock { font-size: 2.15rem; }
   .trend { height: 100px; }
   .net-svg { height: 56px; }
@@ -1216,6 +1267,8 @@ function linePath(values, w, h, domainMax) {
 @media (max-width: 720px) {
   .span-3, .span-4, .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
   .mid, .io-note { display: none; }
+  .id-name { font-size: 1.85rem; }
+  .id-clock { font-size: 1rem; }
   .clock { font-size: 2.7rem; }
   .trend { height: 180px; }
   .net-svg { height: 128px; }

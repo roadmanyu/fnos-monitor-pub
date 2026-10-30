@@ -14,6 +14,7 @@ from app.api.v1 import alerts, auth, disks, docker, meta, metrics
 from app.collectors.loop import CollectorLoop
 from app.config import data_dir, load_config
 from app.storage.sqlite_store import Store
+from app.version import app_version as _app_version
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +40,7 @@ async def lifespan(app: FastAPI):
     log.info("fnos-monitor stopping")
 
 
-app = FastAPI(title="fnOS Monitor", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="fnOS Monitor", version=_app_version(), lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

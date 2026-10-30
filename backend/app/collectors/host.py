@@ -1,8 +1,17 @@
-"""主机 CPU/内存/交换/负载/温度/网卡吞吐。"""
+"""主机 CPU/内存/交换/负载/温度/网卡吞吐，以及系统身份。"""
 from __future__ import annotations
 
+import ipaddress
 import logging
+import platform
+import re
+import shutil
+import socket
+import subprocess
+import threading
 import time
+import urllib.request
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -48,6 +57,8 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
             "net_down_bps": None if down_bps is None else round(down_bps, 1),
             "disk_read_bps": None if read_bps is None else round(read_bps, 1),
             "disk_write_bps": None if write_bps is None else round(write_bps, 1),
+            **_identity(),
+            "public_ipv4": _public_ipv4_cached(),
             "mock": False,
         }
     except Exception as e:
@@ -112,8 +123,198 @@ def _mock_host() -> dict[str, Any]:
         "net_down_bps": 80_000.0,
         "disk_read_bps": 0.0,
         "disk_write_bps": 40_000.0,
+        "os": "Linux",
+        "arch": "x86_64",
+        "cpu_model": "MOCK CPU",
+        "lan_ipv4": "192.168.1.8",
+        "public_ipv4": None,
+        "gpu_model": None,
         "mock": True,
     }
+
+
+_static_identity: dict[str, Any] | None = None
+_gpu_done = False
+_gpu_value: str | None = None
+_public_lock = threading.Lock()
+_public_cache: dict[str, Any] = {"ip": None, "fetched_at": 0.0, "busy": False}
+_PUBLIC_OK_TTL = 600.0
+_PUBLIC_FAIL_TTL = 60.0
+_LSPCI_FIELDS = re.compile(r'"([^"]*)"')
+
+
+def _identity() -> dict[str, Any]:
+    global _static_identity
+    if _static_identity is None:
+        _static_identity = {
+            "os": _os_pretty(),
+            "arch": platform.machine() or None,
+            "cpu_model": _cpu_model(),
+            "gpu_model": _gpu_model(),
+        }
+    return {
+        **_static_identity,
+        "lan_ipv4": _lan_ipv4(),
+    }
+
+
+def _os_pretty() -> str | None:
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            if line.startswith("PRETTY_NAME="):
+                return line.split("=", 1)[1].strip().strip('"') or None
+    except Exception:
+        pass
+    name = f"{platform.system()} {platform.release()}".strip()
+    return name or None
+
+
+def _cpu_model() -> str | None:
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        text = ""
+    for key in ("model name", "hardware", "model"):
+        for line in text.splitlines():
+            if line.lower().startswith(key + "\t") or line.lower().startswith(key + " "):
+                value = line.split(":", 1)[-1].strip()
+                if value:
+                    return value
+    proc = (platform.processor() or "").strip()
+    return proc or None
+
+
+def _lan_ipv4() -> str | None:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.2)
+        try:
+            sock.connect(("192.0.2.1", 9))
+            ip = sock.getsockname()[0]
+        finally:
+            sock.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        for addrs in psutil.net_if_addrs().values():
+            for addr in addrs:
+                if addr.family != socket.AF_INET:
+                    continue
+                ip = addr.address or ""
+                if ip.startswith("127.") or ip.startswith("169.254."):
+                    continue
+                return ip
+    except Exception:
+        return None
+    return None
+
+
+def _gpu_model() -> str | None:
+    global _gpu_done, _gpu_value
+    if not _gpu_done:
+        _gpu_value = _probe_gpu()
+        _gpu_done = True
+    return _gpu_value
+
+
+def _probe_gpu() -> str | None:
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            for line in (result.stdout or "").splitlines():
+                name = line.strip()
+                if name and "not supported" not in name.lower():
+                    return name
+        except Exception:
+            pass
+    if shutil.which("lspci"):
+        try:
+            result = subprocess.run(
+                ["lspci", "-mm"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            found = _gpu_from_lspci(result.stdout or "")
+            if found:
+                return found
+        except Exception:
+            pass
+    return None
+
+
+def _gpu_from_lspci(text: str) -> str | None:
+    for line in text.splitlines():
+        low = line.lower()
+        if "vga" not in low and "3d controller" not in low and "display controller" not in low:
+            continue
+        parts = _LSPCI_FIELDS.findall(line)
+        if len(parts) < 3:
+            continue
+        vendor, device = parts[1].strip(), parts[2].strip()
+        if not device:
+            continue
+        if vendor and vendor.lower() not in device.lower():
+            return f"{vendor} {device}"
+        return device
+    return None
+
+
+def current_public_ipv4() -> str | None:
+    """给 API 读取用：只看缓存并按需触发刷新，不等待网络。"""
+    return _public_ipv4_cached()
+
+
+def _public_ipv4_cached() -> str | None:
+    """返回缓存。过期时在后台刷新，不占用采集线程。"""
+    now = time.monotonic()
+    with _public_lock:
+        ip = _public_cache["ip"]
+        age = now - float(_public_cache["fetched_at"] or 0)
+        ttl = _PUBLIC_OK_TTL if ip else _PUBLIC_FAIL_TTL
+        fresh = _public_cache["fetched_at"] and age < ttl
+        if fresh or _public_cache["busy"]:
+            return ip if isinstance(ip, str) else None
+        _public_cache["busy"] = True
+    threading.Thread(target=_fetch_public_ipv4, name="public-ip", daemon=True).start()
+    return ip if isinstance(ip, str) else None
+
+
+def _fetch_public_ipv4() -> None:
+    ip = None
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "fnos-monitor"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                text = resp.read(64).decode("ascii", errors="ignore")
+            parsed = _parse_ipv4(text)
+            if parsed:
+                ip = parsed
+                break
+        except Exception as exc:
+            log.info("public ip %s skipped: %s", url, exc)
+    with _public_lock:
+        _public_cache["ip"] = ip
+        _public_cache["fetched_at"] = time.monotonic()
+        _public_cache["busy"] = False
+
+
+def _parse_ipv4(text: str) -> str | None:
+    token = (text or "").strip().split()
+    if not token:
+        return None
+    try:
+        return str(ipaddress.IPv4Address(token[0]))
+    except Exception:
+        return None
 
 
 def _read_temps() -> dict[str, Any]:

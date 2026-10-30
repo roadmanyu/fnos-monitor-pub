@@ -11,7 +11,7 @@ echo "token ok"
 echo "== meta =="
 curl -sf -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/meta"; echo
 echo "== snapshot =="
-curl -sf -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/metrics/snapshot" | python3 -c "import sys,json; d=json.load(sys.stdin); h=d.get('host') or {}; print('cpu', h.get('cpu_pct'), 'swap', h.get('swap_used_pct'), 'net_up', h.get('net_up_bps'), 'fs', len(d.get('filesystems') or [])); assert 'swap_used_pct' in h and 'net_up_bps' in h, h"
+curl -sf -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/metrics/snapshot" | python3 -c "import sys,json; d=json.load(sys.stdin); h=d.get('host') or {}; print('cpu', h.get('cpu_pct'), 'swap', h.get('swap_used_pct'), 'net_up', h.get('net_up_bps'), 'fs', len(d.get('filesystems') or [])); assert 'swap_used_pct' in h and 'net_up_bps' in h and h.get('cpu_model') and h.get('lan_ipv4'), h"
 echo "== history =="
 curl -sf -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/metrics/history?metric=cpu.pct&step=60" | python3 -c "import sys,json; d=json.load(sys.stdin); print('points', len(d.get('points') or []))"
 echo "== disks =="

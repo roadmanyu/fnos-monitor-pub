@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import require_user
+from app.collectors.host import current_public_ipv4
 from app.state import get_latest
 from app.storage.sqlite_store import Store
 
@@ -26,9 +27,12 @@ def snapshot(_user: str = Depends(require_user)):
             "disks_smart_summary": [],
             "docker": {"running": 0, "stopped": 0, "total": 0},
         }
+    host = dict(latest.get("host") or {})
+    if host:
+        host["public_ipv4"] = current_public_ipv4()
     return {
         "ts": latest.get("ts"),
-        "host": latest.get("host") or {},
+        "host": host,
         "filesystems": [
             {k: v for k, v in fs.items() if k != "mock"}
             for fs in (latest.get("filesystems") or [])
