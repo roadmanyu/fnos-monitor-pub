@@ -34,7 +34,7 @@ onUnmounted(() => clearInterval(timer))
       <button class="btn" :class="filter==='all'?'':'ghost'" @click="filter='all'">全部</button>
       <button class="btn" :class="filter==='running'?'':'ghost'" @click="filter='running'">运行中</button>
     </div>
-    <div class="card">
+    <div class="card table-card">
       <table>
         <thead>
           <tr><th>名称</th><th>状态</th><th>镜像</th><th>重启</th><th>CPU</th><th>内存</th></tr>
