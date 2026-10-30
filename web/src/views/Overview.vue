@@ -264,7 +264,15 @@ async function openDrawer(id) {
   const el = document.getElementById(id)
   if (!el) return
   el.open = true
-  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  if (!window.matchMedia('(max-width: 720px)').matches) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+function syncSheet() {
+  const open = diskOpen.value || dockerOpen.value || alertOpen.value
+  const narrow = window.matchMedia('(max-width: 720px)').matches
+  document.body.classList.toggle('sheet-open', open && narrow)
 }
 
 function onDrawerToggle(e) {
@@ -272,6 +280,7 @@ function onDrawerToggle(e) {
   if (el.id === 'disk-detail') diskOpen.value = el.open
   if (el.id === 'docker-detail') dockerOpen.value = el.open
   if (el.id === 'alert-detail') alertOpen.value = el.open
+  syncSheet()
 }
 
 function rateLabel(value, known) {
@@ -295,6 +304,7 @@ watch(() => route.hash, (hash) => {
 onUnmounted(() => {
   clearInterval(poll)
   clearInterval(clock)
+  document.body.classList.remove('sheet-open')
 })
 
 const TREND_SERIES = [
@@ -742,6 +752,7 @@ function linePath(values, w, h, domainMax) {
 .mod-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-height: 26px;
 }
@@ -1183,15 +1194,36 @@ function linePath(values, w, h, domainMax) {
 .alert-title { font-weight: 700; }
 .empty-inline { margin: 0; }
 
-@media (max-width: 1100px) {
+@media (min-width: 1200px) {
+  .modules { gap: 12px; }
+}
+
+@media (min-width: 1200px) and (max-height: 860px) {
+  .modules { gap: 10px; }
+  .mod { gap: 6px; padding: 12px 14px; }
+  .clock { font-size: 2.15rem; }
+  .trend { height: 100px; }
+  .net-svg { height: 56px; }
+  .empty.grow { min-height: 72px; }
+}
+
+@media (max-width: 1199px) {
   .span-3, .span-4 { grid-column: span 6; }
   .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
-  .health-sum { text-align: left; }
+  .health-sum { margin-left: 0; text-align: left; }
 }
 
 @media (max-width: 720px) {
   .span-3, .span-4, .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
-  .clock { font-size: 2.3rem; }
-  .health-row, .sum-row { grid-template-columns: 1fr; }
+  .mid, .io-note { display: none; }
+  .clock { font-size: 2.7rem; }
+  .trend { height: 180px; }
+  .net-svg { height: 128px; }
+  .net-v { font-size: 1.35rem; }
+  .health-cell b, .sum b { font-size: 1.45rem; }
+  .donut-wrap, .donut { width: 148px; height: 148px; }
+  .ctr-list { max-height: none; }
+  .disk { flex-basis: 46%; }
+  .health-sum { font-size: 0.85rem; }
 }
 </style>

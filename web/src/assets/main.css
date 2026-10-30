@@ -78,6 +78,14 @@ code {
 
 .page.dash { max-width: 1360px; }
 
+@media (min-width: 1200px) {
+  .page.dash {
+    max-width: none;
+    width: 100%;
+    padding: 14px 18px 28px;
+  }
+}
+
 .nav {
   display: flex;
   align-items: center;
@@ -245,7 +253,52 @@ th { color: var(--muted); font-weight: 600; font-size: 0.78rem; letter-spacing: 
 }
 
 @media (max-width: 720px) {
-  .nav { flex-wrap: wrap; }
-  .nav .btn { margin-left: 0; }
-  .page { padding: 14px 12px 28px; }
+  .nav {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  .brand-name { display: none; }
+  .nas-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    gap: 2px;
+  }
+  .nas-tabs::-webkit-scrollbar { display: none; }
+  .nas-tab, .nav a, .nav .btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .nav a.nav-home { display: none; }
+  .nav .btn { margin-left: 0; padding: 8px 12px; }
+  .page { padding: 12px 12px 32px; }
+  .drawer > summary { min-height: 48px; }
+  .drawer[open] {
+    position: fixed;
+    z-index: 50;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    height: auto;
+    max-height: min(92vh, 100%);
+    margin: 0;
+    border-radius: 20px 20px 0 0;
+    overflow: auto;
+    padding: 4px 16px calc(20px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -16px 40px rgba(28, 36, 48, 0.2);
+  }
+  body.sheet-open { overflow: hidden; }
+  body.sheet-open::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: rgba(28, 36, 48, 0.38);
+    z-index: 45;
+  }
 }

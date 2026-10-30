@@ -39,7 +39,7 @@ function logout() {
       <router-link class="nas-tab add" to="/settings#add-nas">+ 添加</router-link>
     </div>
     <div class="nav-links">
-      <router-link to="/">总览</router-link>
+      <router-link class="nav-home" to="/">总览</router-link>
       <router-link to="/settings">设置</router-link>
     </div>
     <button class="btn ghost" type="button" @click="logout">退出</button>
