@@ -815,9 +815,8 @@ function linePath(values, w, h, domainMax) {
 
 .id-body {
   display: grid;
-  grid-template-columns: minmax(240px, 0.85fr) minmax(0, 2.15fr);
-  gap: 16px 36px;
-  align-items: end;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 .id-card .mod-title { font-size: 1.05rem; }
 .id-card .pill { font-size: 0.95rem; padding: 5px 12px; }
@@ -848,17 +847,18 @@ function linePath(values, w, h, domainMax) {
 }
 .id-time { font-size: 1.55rem; font-weight: 650; color: var(--ink); letter-spacing: -0.03em; }
 .id-card .facts {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px 32px;
+  grid-template-columns: 1fr;
+  gap: 10px;
 }
 .id-card .fact {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
 }
 .id-card .fact span { font-size: 0.95rem; }
-.id-card .fact b { font-size: 1.25rem; text-align: left; }
-.id-card .fact b.clip { white-space: normal; }
+.id-card .fact b { font-size: 1.25rem; text-align: right; }
+.id-card .fact b.clip { white-space: nowrap; }
 .id-ver {
   margin-top: 8px;
   color: #9aa3b2;
@@ -1303,14 +1303,11 @@ function linePath(values, w, h, domainMax) {
 @media (max-width: 720px) {
   .span-3, .span-4, .span-5, .span-7, .span-8, .span-12 { grid-column: span 12; }
   .mid, .io-note { display: none; }
-  .id-body, .id-card .facts { grid-template-columns: 1fr; }
   .id-name { font-size: 2rem; }
   .id-fresh { font-size: 1.05rem; }
   .id-time { font-size: 1.25rem; }
   .id-clock { font-size: 0.95rem; margin-top: 8px; }
-  .id-card .fact { flex-direction: row; align-items: baseline; }
-  .id-card .fact b { font-size: 1.05rem; text-align: right; }
-  .id-card .fact b.clip { white-space: nowrap; }
+  .id-card .fact b { font-size: 1.05rem; }
   .id-card .fact span { font-size: 0.85rem; }
   .clock { font-size: 2.7rem; }
   .trend { height: 180px; }
