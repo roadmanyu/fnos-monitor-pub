@@ -33,6 +33,7 @@ const tempsOpen = ref(false)
 const topMetric = ref('cpu')
 const seriesOn = reactive({ cpu: true, mem: true, load: false, temp: false })
 let poll
+let pollDelay = 0
 let clock
 
 const tz = computed(() => meta.value?.timezone_display || 'Asia/Shanghai')
@@ -174,14 +175,17 @@ const ageSec = computed(() => {
   return Math.max(0, Math.floor((now.value.getTime() - t) / 1000))
 })
 
-const collectStale = computed(() => {
-  if (ageSec.value == null) return false
-  const interval = Number(meta.value?.collect_interval_sec)
-  const limit = Number.isFinite(interval) && interval > 0 ? interval : 30
-  return ageSec.value > limit * 2
+const intervalSec = computed(() => {
+  const n = Number(meta.value?.collect_interval_sec)
+  return Number.isFinite(n) && n > 0 ? n : 2
 })
 
-const ageText = computed(() => (ageSec.value == null ? '—' : `${ageSec.value} 秒前更新`))
+const collectStale = computed(() => {
+  if (ageSec.value == null) return false
+  return ageSec.value > intervalSec.value * 2
+})
+
+const cadenceText = computed(() => `每 ${intervalSec.value} 秒`)
 
 const healthReady = computed(() => !!snap.value?.ts)
 const healthOk = computed(() => (
@@ -202,6 +206,7 @@ async function load() {
     alerts.value = a
     rememberLocalName(m?.hostname)
     err.value = ''
+    armPoll()
   } catch (e) {
     err.value = e.message || '加载失败'
   }
@@ -296,6 +301,14 @@ function onDrawerToggle(e) {
   syncSheet()
 }
 
+function armPoll() {
+  const ms = intervalSec.value * 1000
+  if (poll && pollDelay === ms) return
+  pollDelay = ms
+  clearInterval(poll)
+  poll = setInterval(load, ms)
+}
+
 function rateLabel(value, known) {
   if (!known) return '暂无数据'
   return formatRate(value) || '采集中'
@@ -303,7 +316,7 @@ function rateLabel(value, known) {
 
 onMounted(() => {
   load()
-  poll = setInterval(load, 30000)
+  armPoll()
   clock = setInterval(() => { now.value = new Date() }, 1000)
   if (route.hash) openDrawer(route.hash.slice(1))
 })
@@ -391,11 +404,7 @@ function linePath(values, w, h, domainMax) {
         <div class="id-hero">
           <div class="id-name">{{ heroName }}</div>
           <div v-if="heroHost" class="id-host">{{ heroHost }}</div>
-          <div
-            class="id-fresh"
-            :class="{ stale: collectStale }"
-            :title="formatTs(meta?.last_collect_ts || snap?.ts, tz)"
-          >{{ ageText }}</div>
+          <div class="id-fresh">{{ cadenceText }}</div>
         </div>
         <div class="id-clock">
           <span>{{ clockText }}</span>
@@ -422,9 +431,9 @@ function linePath(values, w, h, domainMax) {
             <span>公网</span>
             <b>{{ host.public_ipv4 || '—' }}</b>
           </div>
-          <div v-if="host.gpu_model" class="fact">
+          <div class="fact">
             <span>GPU</span>
-            <b class="clip" :title="host.gpu_model">{{ host.gpu_model }}</b>
+            <b class="clip" :title="host.gpu_model || ''">{{ host.gpu_model || '—' }}</b>
           </div>
         </div>
         <div class="id-ver">v{{ meta?.app_version || '—' }}</div>

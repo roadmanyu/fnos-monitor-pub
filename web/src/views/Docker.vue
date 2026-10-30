@@ -24,7 +24,7 @@ async function load() {
   }
 }
 
-onMounted(() => { load(); timer = setInterval(load, 30000) })
+onMounted(() => { load(); timer = setInterval(load, 2000) })
 onUnmounted(() => clearInterval(timer))
 </script>
 

@@ -10,7 +10,7 @@ auth:
   jwt_expire_sec: 86400
 
 collect:
-  interval_sec: 30
+  interval_sec: 2
   fs_interval_sec: 60
   retention_days: 7
   # true：无 Docker/SMART 时用模拟数据，便于开发机跑通

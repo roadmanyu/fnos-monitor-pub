@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,11 +39,13 @@ class CollectorLoop:
     async def _run(self) -> None:
         # 启动立即采一轮
         while True:
+            started = time.monotonic()
             try:
                 await asyncio.to_thread(self._collect_once)
             except Exception as e:
                 log.exception("collect loop error: %s", e)
-            await asyncio.sleep(self.cfg.collect.interval_sec)
+            elapsed = time.monotonic() - started
+            await asyncio.sleep(max(0.0, self.cfg.collect.interval_sec - elapsed))
 
     def _collect_once(self) -> None:
         import time

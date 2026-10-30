@@ -302,9 +302,9 @@ PWA：`manifest.webmanifest` + 图标；可「添加到主屏幕」。Service Wo
 
 | 采集项 | 周期 | 说明 |
 |--------|------|------|
-| CPU / 内存 / 负载 / 温度(sensors) | **30s** | 写入 `metric_points` |
+| CPU / 内存 / 负载 / 温度(sensors) | **2s** | 写入 `metric_points` |
 | 文件系统容量 | **60s** | 可与 30s 同轮但每 2 次采一次 |
-| Docker 列表 + stats | **30s** | `docker.sock`；stats 可对 running 容器采样 |
+| Docker 列表 + stats | **2s** | `docker.sock`；stats 可对 running 容器采样 |
 | **SMART** | **15min**（可配 `smart.interval_sec: 900`） | `smartctl --json`；**先** `powermode`/`--nocheck=standby`：若 standby 则 **跳过** 并标记 `skipped_standby`，不唤醒 |
 | DB 清理 | 每天一次 | 删除 7 天前 `metric_points` / 旧告警（告警可留 30 天） |
 
@@ -401,7 +401,7 @@ auth:
   jwt_expire_sec: 86400
 
 collect:
-  interval_sec: 30
+  interval_sec: 2
   fs_interval_sec: 60
   retention_days: 7
   filesystem_mounts: []   # 空=自动发现，排除 tmpfs/overlay 等
