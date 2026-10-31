@@ -236,7 +236,7 @@ const topContainers = computed(() => {
     }
     return (Number(b.cpu_pct) || -1) - (Number(a.cpu_pct) || -1)
   })
-  return ranked.slice(0, 5).map((c, i) => ({
+  return ranked.slice(0, 8).map((c, i) => ({
     ...c,
     rank: i + 1,
     hot: Number(c.cpu_pct) >= 50
@@ -1759,10 +1759,10 @@ function linePath(values, w, h, domainMax) {
 }
 .ctr {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) 84px 84px;
+  grid-template-columns: 12px minmax(0, 1fr) minmax(88px, 112px) minmax(88px, 112px);
   gap: 8px;
   align-items: center;
-  padding: 2px 2px;
+  padding: 1px 0;
   font-size: 0.98rem;
   border-radius: 8px;
   flex: none;
@@ -1786,16 +1786,20 @@ function linePath(values, w, h, domainMax) {
 .ctr-dot.stop { background: #fb7185; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stat.meter {
-  display: grid;
-  gap: 3px;
-  justify-items: stretch;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 .stat.meter b {
+  flex: none;
+  min-width: 2.4em;
   text-align: right;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  line-height: 1.1;
+  line-height: 1;
 }
+.stat.meter .seg { flex: 1; min-width: 36px; }
 .docker-card .seg.sm { height: 8px; }
 .stat {
   text-align: right;
