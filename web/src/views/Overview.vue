@@ -432,7 +432,7 @@ function barColor(pct) {
 }
 
 function diskHealth(d) {
-  if (d.skipped_standby) return { label: 'STANDBY', cls: 'muted' }
+  if (d.skipped_standby) return { label: '休眠', cls: 'muted' }
   if (d.healthy === false) return { label: 'FAIL', cls: 'bad' }
   if (d.healthy === true) return { label: 'OK', cls: 'ok' }
   return { label: '—', cls: 'muted' }
@@ -1041,22 +1041,22 @@ function linePath(values, w, h, domainMax) {
           <span class="health-sum push">
             OK {{ diskRollup.ok }}
             · FAIL <em :class="{ bad: diskRollup.fail > 0 }">{{ diskRollup.fail }}</em>
-            · STANDBY {{ diskRollup.standby }}
+            · 休眠 {{ diskRollup.standby }}
             · 最热 {{ diskRollup.hot != null ? diskRollup.hot + '°C' : '—' }}
           </span>
         </header>
         <div v-if="disks.length" class="disk-row">
           <article v-for="d in disks" :key="d.id" class="disk">
+            <div class="disk-cap">{{ d.capacity_bytes != null ? formatBytes(d.capacity_bytes) : '—' }}</div>
+            <div v-if="d.media" class="disk-media">{{ d.media }}</div>
             <div class="disk-id">{{ d.id }}</div>
-            <div class="disk-model">{{ d.model || '—' }}</div>
-            <div class="disk-k">TEMP</div>
+            <div class="disk-k">温度</div>
             <div class="disk-temp">{{ d.temp_c != null ? d.temp_c + '°C' : '—' }}</div>
-            <div class="disk-k">HEALTH</div>
+            <div class="disk-k">健康</div>
             <div class="disk-health" :class="diskHealth(d).cls">{{ diskHealth(d).label }}</div>
-            <div v-if="d.power_on_hours != null" class="disk-poh">通电 {{ d.power_on_hours }} h</div>
           </article>
         </div>
-        <div v-else class="empty">暂无数据</div>
+        <div v-else class="pool-empty">暂无硬盘</div>
       </section>
 
       <section class="card mod span-12 alerts">
@@ -1883,31 +1883,47 @@ function linePath(values, w, h, domainMax) {
 .pool-card .io-note { font-size: 0.92rem; font-weight: 700; color: #3d4754; letter-spacing: 0; }
 
 .disk-row {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  flex-wrap: nowrap;
+  gap: 8px;
+  overflow: hidden;
+  align-items: stretch;
 }
 .disk {
-  flex: 1 0 128px;
+  flex: 1 1 0;
+  min-width: 0;
+  container-type: inline-size;
   background: #f6f8fa;
   border-radius: 14px;
-  padding: 12px;
-  min-width: 128px;
+  padding: 8px 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  gap: 1px;
+  overflow: hidden;
 }
-.disk-id { font-weight: 750; letter-spacing: -0.02em; }
-.disk-model {
-  color: var(--muted);
-  font-size: 0.75rem;
-  min-height: 1.1em;
+.disk-cap {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  white-space: nowrap;
+  font-size: clamp(0.85rem, 28cqw, 1.45rem);
+  font-variant-numeric: tabular-nums;
+}
+.disk-media, .disk-id {
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: clamp(0.62rem, 16cqw, 0.8rem);
 }
+.disk-media { color: var(--muted); font-weight: 650; }
+.disk-id { font-weight: 750; letter-spacing: -0.02em; }
 .disk-k {
-  margin-top: 8px;
-  font-size: 0.66rem;
-  letter-spacing: 0.08em;
+  margin-top: 2px;
+  font-size: clamp(0.58rem, 12cqw, 0.68rem);
+  letter-spacing: 0.04em;
   color: #9aa3b2;
   font-weight: 700;
 }
@@ -1915,12 +1931,14 @@ function linePath(values, w, h, domainMax) {
   color: #f08a3a;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
+  font-size: clamp(0.8rem, 20cqw, 1.05rem);
+  line-height: 1.1;
 }
-.disk-health { font-weight: 800; letter-spacing: 0.04em; font-size: 0.92rem; }
+.disk-health { font-weight: 800; letter-spacing: 0.04em; font-size: clamp(0.75rem, 18cqw, 0.95rem); }
 .disk-health.ok { color: #15915f; }
 .disk-health.bad { color: var(--crit); }
 .disk-health.muted { color: var(--muted); }
-.disk-poh { margin-top: 6px; color: var(--muted); font-size: 0.72rem; }
+.disk-card .health-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .alert-list { display: grid; gap: 8px; }
 .alert-row {
@@ -2079,7 +2097,13 @@ function linePath(values, w, h, domainMax) {
   .pool { flex: none; width: 100%; }
   .pool-fig b { font-size: 1.5rem; }
   .pool-name { font-size: 1rem; }
-  .disk { flex-basis: 46%; }
+  .disk-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    overflow: visible;
+  }
+  .disk { min-height: 148px; }
+  .disk-cap { font-size: 1.35rem; }
   .health-sum { font-size: 0.85rem; }
 }
 </style>

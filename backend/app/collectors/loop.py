@@ -95,6 +95,8 @@ class CollectorLoop:
                     "healthy": d.get("healthy"),
                     "temp_c": d.get("temp_c"),
                     "power_on_hours": d.get("power_on_hours"),
+                    "capacity_bytes": d.get("capacity_bytes"),
+                    "media": d.get("media"),
                     "skipped_standby": d.get("skipped_standby"),
                     "mock": d.get("mock", False),
                 }
