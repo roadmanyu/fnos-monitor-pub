@@ -418,6 +418,11 @@ async function safeJson(path) {
   }
 }
 
+function poolName(mount) {
+  if (mount === '/') return '系统盘'
+  return mount || '—'
+}
+
 function barColor(pct) {
   const n = Number(pct)
   if (Number.isNaN(n)) return 'teal'
@@ -1009,21 +1014,24 @@ function linePath(values, w, h, domainMax) {
         <header class="mod-head">
           <span class="mid">M08</span>
           <span class="mod-title">存储池</span>
-          <span class="io-note push">{{ diskIoText || '按使用率 · 读写暂无数据' }}</span>
-          <a class="mod-link" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">全部</a>
+          <span class="io-note push">{{ diskIoText || '读写暂无数据' }}</span>
+          <a class="mod-link" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">磁盘详情</a>
         </header>
         <div v-if="filesystems.length" class="pool-row">
           <div v-for="fs in filesystems" :key="fs.id" class="pool">
-            <div class="pool-name">{{ fs.mount }}</div>
+            <div class="pool-name">
+              {{ poolName(fs.mount) }}
+              <span v-if="fs.fstype" class="pool-fs">[{{ fs.fstype }}]</span>
+            </div>
             <div class="pool-fig">
               <b>{{ formatBytes(fs.used_bytes) }}</b>
               <span>/ {{ formatBytes(fs.total_bytes) }}</span>
             </div>
-            <div class="seg sm" :class="barColor(fs.used_pct)" :style="{ '--p': clampPct(fs.used_pct) + '%' }"></div>
+            <div class="seg" :class="barColor(fs.used_pct)" :style="{ '--p': clampPct(fs.used_pct) + '%' }"></div>
             <div class="pool-pct" :class="barColor(fs.used_pct)">{{ formatPct(fs.used_pct, 0) }}%</div>
           </div>
         </div>
-        <div v-else class="empty">暂无挂载数据</div>
+        <div v-else class="pool-empty">暂无存储池</div>
       </section>
 
       <section class="card mod span-12 disk-card">
@@ -1813,14 +1821,66 @@ function linePath(values, w, h, domainMax) {
   font-size: 0.84rem;
 }
 
-.pool-row { display: flex; flex-wrap: wrap; gap: 14px 18px; }
-.pool { flex: 1 1 150px; min-width: 140px; display: grid; gap: 4px; }
-.pool-name { font-weight: 700; }
-.pool-fig { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
-.pool-fig b { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
-.pool-fig span, .pool-pct { color: var(--muted); font-size: 0.82rem; }
+.pool-card { min-height: 0; }
+.pool-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 12px;
+  overflow: hidden;
+}
+.pool {
+  flex: 1 1 0;
+  min-width: 0;
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  gap: 4px;
+}
+.pool-name {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: clamp(0.72rem, 22cqw, 0.95rem);
+}
+.pool-fs { color: var(--muted); font-weight: 650; margin-left: 4px; }
+.pool-fig {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.pool-fig b {
+  font-size: clamp(0.85rem, 32cqw, 1.5rem);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+.pool-fig span, .pool-pct {
+  color: var(--muted);
+  font-size: clamp(0.68rem, 16cqw, 0.85rem);
+  white-space: nowrap;
+}
+.pool .seg { height: 9px; }
 .pool-pct.warn { color: #b45309; font-weight: 800; }
 .pool-pct.crit { color: var(--crit); font-weight: 800; }
+.pool-empty {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: #f7f8fb;
+  color: #5c6775;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.pool-card .io-note { font-size: 0.92rem; font-weight: 700; color: #3d4754; letter-spacing: 0; }
 
 .disk-row {
   display: flex;
@@ -2014,6 +2074,11 @@ function linePath(values, w, h, domainMax) {
   .docker-card .chip { min-height: 44px; font-size: 0.95rem; padding: 0 12px; }
   .docker-sums { width: 96px; }
   .docker-card .sum b { font-size: 1.55rem; }
+  .pool-card .io-note { display: inline; }
+  .pool-row { flex-direction: column; overflow: visible; gap: 14px; }
+  .pool { flex: none; width: 100%; }
+  .pool-fig b { font-size: 1.5rem; }
+  .pool-name { font-size: 1rem; }
   .disk { flex-basis: 46%; }
   .health-sum { font-size: 0.85rem; }
 }
