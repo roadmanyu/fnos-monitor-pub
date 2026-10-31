@@ -37,6 +37,20 @@ class PowerCfg(BaseModel):
     rated_watts: float = 200
 
 
+class FanPresetsCfg(BaseModel):
+    silent: int = 30
+    normal: int = 55
+    performance: int = 85
+
+
+class FansCfg(BaseModel):
+    # 默认允许写 hwmon PWM。没有可写节点时接口仍拒绝，界面保持只读。
+    control_enabled: bool = True
+    # 手动转速下限（百分比）。低于该值的请求直接 409，避免把风扇停转。
+    min_pwm_percent: int = 25
+    presets: FanPresetsCfg = Field(default_factory=FanPresetsCfg)
+
+
 class SmartCfg(BaseModel):
     enabled: bool = True
     interval_sec: int = 900
@@ -77,6 +91,7 @@ class AppConfig(BaseModel):
     smart: SmartCfg = Field(default_factory=SmartCfg)
     docker: DockerCfg = Field(default_factory=DockerCfg)
     power: PowerCfg = Field(default_factory=PowerCfg)
+    fans: FansCfg = Field(default_factory=FansCfg)
     alerts: AlertsCfg = Field(default_factory=AlertsCfg)
     display: DisplayCfg = Field(default_factory=DisplayCfg)
 

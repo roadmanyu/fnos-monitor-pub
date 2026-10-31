@@ -10,6 +10,7 @@ from typing import Any
 from app.alerts.rules import evaluate
 from app.collectors import disk as disk_col
 from app.collectors import docker_col
+from app.collectors import fans as fan_col
 from app.collectors import host as host_col
 from app.collectors import smart as smart_col
 from app.config import AppConfig
@@ -56,6 +57,10 @@ class CollectorLoop:
         self._tick += 1
 
         host = host_col.collect_host(mock_on_failure=mock)
+        fan_state = fan_col.collect_fans(
+            mock_on_failure=mock,
+            force_mock=bool(host.get("mock")),
+        )
         filesystems: list[dict] = []
         if self._tick == 1 or (self._tick * cfg.collect.interval_sec) % max(
             cfg.collect.fs_interval_sec, cfg.collect.interval_sec
@@ -114,6 +119,9 @@ class CollectorLoop:
                 ),
                 "total": len(containers),
             },
+            "fans": fan_state.get("fans") or [],
+            "control": fan_state.get("control") or "off",
+            "reason": fan_state.get("reason") or "",
         }
         # 附带完整 SMART 供 API
         snapshot["_smart_full"] = self._full_smart

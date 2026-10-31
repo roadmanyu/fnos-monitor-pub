@@ -26,6 +26,9 @@ def snapshot(_user: str = Depends(require_user)):
             "filesystems": [],
             "disks_smart_summary": [],
             "docker": {"running": 0, "stopped": 0, "total": 0},
+            "fans": [],
+            "control": "off",
+            "reason": "",
         }
     host = dict(latest.get("host") or {})
     if host:
@@ -43,6 +46,9 @@ def snapshot(_user: str = Depends(require_user)):
         ],
         "docker": latest.get("docker")
         or {"running": 0, "stopped": 0, "total": 0},
+        "fans": latest.get("fans") or [],
+        "control": latest.get("control") or "off",
+        "reason": latest.get("reason") or "",
     }
 
 

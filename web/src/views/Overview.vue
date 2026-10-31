@@ -289,9 +289,48 @@ const collectStale = computed(() => {
 const cadenceText = computed(() => `每 ${intervalSec.value} 秒`)
 
 const healthReady = computed(() => !!snap.value?.ts)
-const healthOk = computed(() => (
-  healthReady.value && unackedCount.value === 0 && smartFail.value === 0 && dockerDown.value === 0
-))
+
+const pwmDraft = ref(55)
+const pwmHold = ref(false)
+const fanBusy = ref(false)
+const fanMsg = ref('')
+const fanItems = computed(() => (Array.isArray(snap.value?.fans) ? snap.value.fans : []))
+const fanControl = computed(() => snap.value?.control || 'off')
+const fanWritable = computed(() => fanControl.value === 'ready' && fanItems.value.some((f) => f.controllable))
+const fanSlots = computed(() => {
+  if (fanItems.value.length) return fanItems.value
+  return [
+    { id: 'placeholder-cpu', label: 'CPU', rpm: null, mode: 'unknown', pwm_percent: null },
+    { id: 'placeholder-case', label: '机箱', rpm: null, mode: 'unknown', pwm_percent: null }
+  ]
+})
+const fanCols = computed(() => {
+  const n = fanSlots.value.length
+  if (n <= 1) return 1
+  if (!deskLayout.value) return Math.min(2, n)
+  if (n <= 2) return n
+  return n <= 4 ? 2 : 3
+})
+const fanPill = computed(() => {
+  if (!fanItems.value.length) return '暂无'
+  if (fanControl.value === 'ready') return `${fanItems.value.length} 路`
+  return '只读'
+})
+const fanMode = computed(() => {
+  const modes = fanItems.value.map((f) => f.mode).filter(Boolean)
+  if (!modes.length || modes.some((m) => m !== modes[0])) return ''
+  return modes[0]
+})
+const fanPreset = computed(() => {
+  if (fanMode.value !== 'manual') return ''
+  const known = fanItems.value.find((f) => f.pwm_percent != null)
+  if (!known) return ''
+  const value = Number(known.pwm_percent)
+  if (Math.abs(value - 30) <= 2) return 'silent'
+  if (Math.abs(value - 55) <= 2) return 'normal'
+  if (Math.abs(value - 85) <= 2) return 'performance'
+  return ''
+})
 
 const trend = computed(() => buildTrend(hist.value, seriesOn, trendMode.value))
 
@@ -449,6 +488,11 @@ watch(() => nas.activeId, () => {
 watch(() => route.hash, (hash) => {
   if (hash) openDrawer(hash.slice(1))
 })
+watch(fanItems, (items) => {
+  if (pwmHold.value) return
+  const known = items.find((f) => f.pwm_percent != null)
+  if (known) pwmDraft.value = Math.max(25, Number(known.pwm_percent))
+})
 onUnmounted(() => {
   clearInterval(poll)
   clearInterval(clock)
@@ -493,6 +537,59 @@ function coreFreqText(v) {
 function coreTempText(v) {
   if (v == null || Number.isNaN(Number(v))) return '—'
   return `${Math.round(Number(v))}°`
+}
+
+function fanTone(label, index) {
+  if (label === 'CPU') return 'cpu'
+  if (label === '机箱') return 'case'
+  return index % 2 === 0 ? 'cpu' : 'case'
+}
+
+function fanReasonText(code) {
+  const map = {
+    control_disabled: '调速未开启',
+    not_writable: '系统未提供可写转速',
+    readback_mismatch: '写入后被系统改回，已停用调速',
+    mock: '模拟数据，不能调速',
+    below_floor: '低于最低转速'
+  }
+  return map[code] || ''
+}
+
+async function postFan(path, body) {
+  fanBusy.value = true
+  fanMsg.value = ''
+  try {
+    await api(path, { method: 'POST', body: JSON.stringify(body) })
+  } catch (e) {
+    fanMsg.value = e.message || '调速失败'
+  } finally {
+    fanBusy.value = false
+    pwmHold.value = false
+    await load()
+  }
+}
+
+async function setFanMode(mode) {
+  if (!fanWritable.value || fanBusy.value) return
+  const ids = fanItems.value.filter((f) => f.controllable).map((f) => f.id)
+  for (const id of ids) {
+    await postFan(`/fans/${encodeURIComponent(id)}/mode`, { mode })
+  }
+}
+
+async function setFanPwm() {
+  if (!fanWritable.value || fanBusy.value) return
+  const percent = Math.round(Number(pwmDraft.value))
+  const ids = fanItems.value.filter((f) => f.controllable).map((f) => f.id)
+  for (const id of ids) {
+    await postFan(`/fans/${encodeURIComponent(id)}/pwm`, { percent })
+  }
+}
+
+async function setFanPreset(preset) {
+  if (!fanWritable.value || fanBusy.value) return
+  await postFan('/fans/preset', { preset })
 }
 
 const TREND_DRAW = {
@@ -785,27 +882,59 @@ function linePath(values, w, h, domainMax) {
         <div v-else class="net-empty">暂无 CPU</div>
       </section>
 
-      <section class="card mod span-8 health-card">
+      <section class="card mod span-3 fan-card">
         <header class="mod-head">
-          <span class="mid">M10</span>
-          <span class="mod-title">健康</span>
-          <span v-if="healthReady" class="pill head-pill push" :class="healthOk ? 'ok' : 'warn'">
-            <i class="dot"></i>{{ healthOk ? '全部正常' : '有问题' }}
+          <span class="mid">M06</span>
+          <span class="mod-title">风扇</span>
+          <span class="pill head-pill push" :class="fanControl === 'ready' ? 'ok' : 'muted'">
+            <i class="dot"></i>{{ fanPill }}
           </span>
         </header>
-        <div class="health-row">
-          <a class="health-cell" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">
-            <div class="k">未确认告警</div>
-            <b :class="{ bad: unackedCount > 0 }">{{ healthReady ? unackedCount : '—' }}</b>
-          </a>
-          <a class="health-cell" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">
-            <div class="k">SMART 失败</div>
-            <b :class="{ bad: smartFail > 0 }">{{ healthReady ? smartFail : '—' }}</b>
-          </a>
-          <a class="health-cell" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">
-            <div class="k">容器未运行</div>
-            <b :class="{ warn: dockerDown > 0 }">{{ healthReady ? dockerDown : '—' }}</b>
-          </a>
+        <div class="fan-stage">
+          <div
+            class="fan-grid"
+            :style="{ gridTemplateColumns: `repeat(${fanCols}, minmax(0, 1fr))` }"
+          >
+            <article v-for="(fan, i) in fanSlots" :key="fan.id" class="fan-unit">
+              <svg viewBox="0 0 64 64" class="fan-svg" :class="fanTone(fan.label, i)" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="currentColor" opacity="0.14" />
+                <g fill="currentColor">
+                  <ellipse cx="32" cy="16" rx="7" ry="12" />
+                  <ellipse cx="32" cy="16" rx="7" ry="12" transform="rotate(120 32 32)" />
+                  <ellipse cx="32" cy="16" rx="7" ry="12" transform="rotate(240 32 32)" />
+                </g>
+                <circle cx="32" cy="32" r="4" fill="#fff" />
+              </svg>
+              <div class="fan-rpm">{{ fan.rpm == null ? '—' : fan.rpm }}</div>
+              <div class="fan-label">{{ fan.label }}<template v-if="fan.rpm != null"> RPM</template></div>
+            </article>
+          </div>
+          <div v-if="!fanItems.length" class="fan-empty">暂无风扇</div>
+        </div>
+        <div class="fan-ctrl" :class="{ off: !fanWritable }">
+          <div class="fan-seg">
+            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanMode === 'auto' }" @click="setFanMode('auto')">自动</button>
+            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanMode === 'manual' }" @click="setFanMode('manual')">手动</button>
+          </div>
+          <div class="fan-seg">
+            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanPreset === 'silent' }" @click="setFanPreset('silent')">静音</button>
+            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanPreset === 'normal' }" @click="setFanPreset('normal')">标准</button>
+            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanPreset === 'performance' }" @click="setFanPreset('performance')">强劲</button>
+          </div>
+          <label class="fan-pwm">
+            <span>PWM</span>
+            <input
+              type="range"
+              min="25"
+              max="100"
+              :disabled="!fanWritable || fanBusy"
+              v-model.number="pwmDraft"
+              @pointerdown="pwmHold = true"
+              @change="setFanPwm"
+            />
+            <b>{{ pwmDraft }}%</b>
+          </label>
+          <p v-if="fanMsg || fanReasonText(snap?.reason)" class="fan-note">{{ fanMsg || fanReasonText(snap?.reason) }}</p>
         </div>
       </section>
 
@@ -904,6 +1033,21 @@ function linePath(values, w, h, domainMax) {
       </section>
 
       <section class="card mod span-12 alerts">
+        <div class="health-strip">
+          <a class="health-cell" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">
+            <span class="k">未确认告警</span>
+            <b :class="{ bad: unackedCount > 0 }">{{ healthReady ? unackedCount : '—' }}</b>
+          </a>
+          <a class="health-cell" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">
+            <span class="k">硬盘异常</span>
+            <b :class="{ bad: smartFail > 0 }">{{ healthReady ? smartFail : '—' }}</b>
+          </a>
+          <a class="health-cell" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">
+            <span class="k">未运行容器</span>
+            <b :class="{ warn: dockerDown > 0 }">{{ healthReady ? dockerDown : '—' }}</b>
+          </a>
+        </div>
+        <div class="alert-bar">
         <header class="mod-head">
           <span class="mod-title">最近告警</span>
           <a class="mod-link push" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">全部</a>
@@ -917,6 +1061,7 @@ function linePath(values, w, h, domainMax) {
           </div>
         </div>
         <p v-else class="muted empty-inline">暂无告警</p>
+        </div>
       </section>
     </div>
 
@@ -1444,6 +1589,70 @@ function linePath(values, w, h, domainMax) {
 }
 .temp-list span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .temp-list b { font-variant-numeric: tabular-nums; }
+.health-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.alert-bar { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.fan-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 2px;
+}
+.fan-grid { width: 100%; display: grid; gap: 6px; align-items: center; }
+.fan-unit { min-width: 0; display: grid; justify-items: center; }
+.fan-svg { width: min(72px, 100%); height: auto; }
+.fan-svg.cpu { color: #2ec9c0; }
+.fan-svg.case { color: #8b7cf6; }
+.fan-rpm {
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.fan-label { color: var(--muted); font-size: 0.75rem; font-weight: 700; }
+.fan-empty {
+  margin: 0;
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #5c6775;
+}
+.fan-ctrl { display: grid; gap: 4px; }
+.fan-ctrl.off { opacity: 0.55; }
+.fan-seg { display: flex; gap: 4px; }
+.fan-seg button {
+  flex: 1;
+  border: 0;
+  background: #f4f6f8;
+  color: #607086;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  min-height: 28px;
+  cursor: pointer;
+}
+.fan-seg button.on { background: #e7f6f4; color: var(--teal-ink); }
+.fan-seg button:disabled { cursor: default; }
+.fan-pwm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #607086;
+}
+.fan-pwm input { flex: 1; min-width: 0; accent-color: #2ec9c0; }
+.fan-pwm b { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 2.6em; text-align: right; }
+.fan-note { margin: 0; font-size: 0.72rem; color: #b45309; line-height: 1.3; }
 .health-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1601,7 +1810,7 @@ function linePath(values, w, h, domainMax) {
   .trend-card { grid-column: 7 / span 3; grid-row: 1; }
   .net-card { grid-column: 10 / span 3; grid-row: 1; }
   .cpu-card { grid-column: 1 / span 4; grid-row: 2; }
-  .health-card { grid-column: 5 / span 3; grid-row: 2; }
+  .fan-card { grid-column: 5 / span 3; grid-row: 2; }
   .docker-card { grid-column: 8 / span 5; grid-row: 2; }
   .pool-card { grid-column: 1 / span 7; grid-row: 3; }
   .disk-card { grid-column: 8 / span 5; grid-row: 3; }
@@ -1614,6 +1823,23 @@ function linePath(values, w, h, domainMax) {
     padding: 0 14px;
     gap: 12px;
   }
+  .alerts .health-strip { display: flex; width: auto; flex: none; gap: 10px; }
+  .alerts .health-cell {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 0;
+    background: transparent;
+    border-radius: 0;
+  }
+  .alerts .health-cell .k { font-size: 0.68rem; }
+  .alerts .health-cell b { font-size: 0.95rem; }
+  .alert-bar { flex-direction: row; align-items: center; flex: 1; min-width: 0; gap: 8px; }
+  .fan-card { justify-content: space-evenly; gap: 4px; }
+  .fan-svg { width: min(48px, 72%); }
+  .fan-rpm { font-size: 1.25rem; }
+  .fan-seg button { min-height: 22px; font-size: 0.68rem; padding: 0 4px; }
+  .fan-empty { font-size: 0.95rem; }
   .alerts .mod-head { flex: none; min-height: 0; flex-wrap: nowrap; }
   .alerts .alert-list { flex: 1; min-width: 0; align-items: center; }
   .alerts .alert-row { flex: none; flex-wrap: nowrap; white-space: nowrap; }
@@ -1695,6 +1921,11 @@ function linePath(values, w, h, domainMax) {
   .net-card .k { font-size: 1.05rem; }
   .net-empty { min-height: 120px; font-size: 1.45rem; }
   .health-cell b, .sum b { font-size: 1.45rem; }
+  .health-strip .health-cell { min-height: 44px; align-content: center; }
+  .fan-seg button { min-height: 44px; font-size: 0.95rem; }
+  .fan-pwm { min-height: 44px; font-size: 0.95rem; }
+  .fan-rpm { font-size: 1.8rem; }
+  .fan-svg { width: min(96px, 70%); }
   .ring-wrap { width: min(46vw, 168px); }
   .core-line { font-size: 1rem; }
   .core-line.deg { font-size: 1.15rem; }
