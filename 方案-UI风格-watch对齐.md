@@ -35,7 +35,7 @@
 | 模块 | 画什么 | 数据从哪来 | 没有字段时 |
 |------|--------|------------|------------|
 | M01 系统 | 主机名（或标签名）为主，状态为在线 / 采集延迟 / 离线 / 模拟数据，旁边是采集频率「每 N 秒」（来自 `collect_interval_sec`，默认 2）；时钟缩小。身份行：系统+架构、CPU 型号、运行时间、局域网 / 公网、GPU（没有则「—」） | `meta.hostname`、`app_version`、`collect_interval_sec`；`host.os/arch/cpu_model/uptime_sec/lan_ipv4/public_ipv4/gpu_model`。公网 IP 后台请求、2 秒超时、成功缓存 10 分钟 | 内存、负载、CPU 温度不在这张卡。不显示「N 秒前更新」 |
-| M02 资源 | CPU、内存、**交换**分段条 | `host.cpu_pct`、`mem_used_*`、`swap_*` | 旧接口没有 `swap_total_bytes` 时仍写「暂无数据」。总量为 0 写「无交换分区」 |
+| M02 资源 | 单列六行：CPU、内存（已用/总量）、交换、功耗、负载、磁盘吞吐。条按占用变色（≥70% 偏暖，≥90% 偏红）。头部同时看 CPU/内存/交换 | `cpu_pct`、`mem_*`、`swap_*`、`load1` 与核心数、`disk_*_bps` 与 `disk_bps_peak`；`power_watts` / `power_source`；额定功率 `meta.power_rated_watts` | 无功耗为「—」。交换总量 0 为「无交换分区」。额定功率 0 只显示瓦数。RAPL 旁标「估算」 |
 | M03 趋势 | 近 1 小时，可叠加切换 CPU / 内存 / 负载 / 温度 | `cpu.pct`、`mem.used_pct`、`load1`、`temp.cpu` | 该序列没有点就不画线。负载按自身峰值、温度按至少 0–100°C，不与百分比共轴 |
 | M04 网络 | 上传 / 下载（B/s）和两条近 1 小时线 | `host.net_up_bps` / `net_down_bps`，历史 `net.up_bps` / `net.down_bps`。速率是相邻两次采集的字节差 | 首轮还没有差值时显示「采集中」 |
 | M05 CPU | 整机圆环、温度、1m/5m，**其它温度可折叠** | `cpu_pct`、`temps_c.cpu`、`temps_c.other`、`load1` / `load5` | 无分核。`other` 为空时写「其它温度 暂无数据」 |

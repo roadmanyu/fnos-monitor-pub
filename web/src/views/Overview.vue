@@ -99,11 +99,69 @@ const loadState = computed(() => {
   if (!snap.value?.ts) return null
   const cpu = Number(host.value?.cpu_pct)
   const mem = Number(host.value?.mem_used_pct)
+  const swap = Number(host.value?.swap_used_pct)
   const hasCpu = !Number.isNaN(cpu)
   const hasMem = !Number.isNaN(mem)
-  if (!hasCpu && !hasMem) return null
-  if ((hasCpu && cpu >= 90) || (hasMem && mem >= 90)) return { text: '负载偏高', cls: 'warn' }
+  const hasSwap = Number(host.value?.swap_total_bytes) > 0 && !Number.isNaN(swap)
+  if (!hasCpu && !hasMem && !hasSwap) return null
+  if ((hasCpu && cpu >= 90) || (hasMem && mem >= 90) || (hasSwap && swap >= 90)) {
+    return { text: '负载偏高', cls: 'warn' }
+  }
   return { text: '负载正常', cls: 'ok' }
+})
+
+function usageTone(pct) {
+  const n = Number(pct)
+  if (Number.isNaN(n)) return ''
+  if (n >= 90) return 'hot'
+  if (n >= 70) return 'warm'
+  return ''
+}
+
+const coreCount = computed(() => {
+  const n = host.value?.cpu_cores?.length
+  return n > 0 ? n : 1
+})
+
+const loadBarPct = computed(() => {
+  const load = Number(host.value?.load1)
+  if (Number.isNaN(load)) return 0
+  return clampPct((load / coreCount.value) * 100)
+})
+
+const powerBarPct = computed(() => {
+  const watts = Number(host.value?.power_watts)
+  const rated = Number(meta.value?.power_rated_watts)
+  if (!Number.isFinite(watts) || !Number.isFinite(rated) || rated <= 0) return 0
+  return clampPct((watts / rated) * 100)
+})
+
+const diskSumBps = computed(() => {
+  const read = host.value?.disk_read_bps
+  const write = host.value?.disk_write_bps
+  if (read == null && write == null) return null
+  return (Number(read) || 0) + (Number(write) || 0)
+})
+
+const diskBarPct = computed(() => {
+  const sum = diskSumBps.value
+  if (sum == null) return 0
+  const cap = Number(meta.value?.disk_bps_cap)
+  const peak = Number(host.value?.disk_bps_peak)
+  const denom = cap > 0 ? cap : Math.max(peak || 0, sum, 1)
+  return clampPct((sum / denom) * 100)
+})
+
+const diskTotalText = computed(() => {
+  const text = formatRate(diskSumBps.value)
+  return text || (diskSumBps.value == null ? '采集中' : '—')
+})
+
+const diskSplitText = computed(() => {
+  const read = formatRate(host.value?.disk_read_bps)
+  const write = formatRate(host.value?.disk_write_bps)
+  if (!read && !write) return ''
+  return `读 ${read || '—'} · 写 ${write || '—'}`
 })
 
 const dockerSummary = computed(() => {
@@ -443,7 +501,7 @@ function linePath(values, w, h, domainMax) {
         <div class="id-ver">v{{ meta?.app_version || '—' }}</div>
       </section>
 
-      <section class="card mod span-3">
+      <section class="card mod span-12 res-card">
         <header class="mod-head">
           <span class="mid">M02</span>
           <span class="mod-title">资源</span>
@@ -456,26 +514,48 @@ function linePath(values, w, h, domainMax) {
             <span>CPU</span>
             <b>{{ formatPct(host.cpu_pct) }}%</b>
           </div>
-          <div class="seg cpu" :style="{ '--p': clampPct(host.cpu_pct) + '%' }"></div>
+          <div class="seg cpu" :class="usageTone(host.cpu_pct)" :style="{ '--p': clampPct(host.cpu_pct) + '%' }"></div>
         </div>
         <div class="metric">
           <div class="metric-top">
-            <span>MEMORY</span>
-            <b>{{ formatBytes(host.mem_used_bytes, 1) }} <em>{{ formatPct(host.mem_used_pct, 0) }}%</em></b>
+            <span>内存</span>
+            <b>{{ formatBytes(host.mem_used_bytes) }} / {{ formatBytes(host.mem_total_bytes) }} <em>{{ formatPct(host.mem_used_pct, 0) }}%</em></b>
           </div>
-          <div class="seg mem" :style="{ '--p': clampPct(host.mem_used_pct) + '%' }"></div>
+          <div class="seg mem" :class="usageTone(host.mem_used_pct)" :style="{ '--p': clampPct(host.mem_used_pct) + '%' }"></div>
         </div>
         <div class="metric">
           <div class="metric-top">
-            <span>SWAP</span>
+            <span>交换</span>
             <b v-if="swapKnown && host.swap_total_bytes > 0">
-              {{ formatBytes(host.swap_used_bytes) }}
+              {{ formatBytes(host.swap_used_bytes) }} / {{ formatBytes(host.swap_total_bytes) }}
               <em class="swap-em">{{ formatPct(host.swap_used_pct, 0) }}%</em>
             </b>
             <b v-else-if="swapKnown" class="na">无交换分区</b>
-            <b v-else class="na">暂无数据</b>
+            <b v-else class="na">—</b>
           </div>
-          <div class="seg swap" :style="{ '--p': (swapKnown ? clampPct(host.swap_used_pct) : 0) + '%' }"></div>
+          <div class="seg swap" :class="usageTone(host.swap_total_bytes > 0 ? host.swap_used_pct : 0)" :style="{ '--p': (swapKnown && host.swap_total_bytes > 0 ? clampPct(host.swap_used_pct) : 0) + '%' }"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-top">
+            <span>功耗 <i v-if="host.power_source === 'rapl'" class="est">估算</i></span>
+            <b v-if="host.power_watts != null">{{ host.power_watts }} W<em v-if="powerBarPct > 0"> {{ formatPct(powerBarPct, 0) }}%</em></b>
+            <b v-else class="na">—</b>
+          </div>
+          <div class="seg power" :class="usageTone(powerBarPct)" :style="{ '--p': powerBarPct + '%' }"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-top">
+            <span>负载</span>
+            <b>{{ host.load1 ?? '—' }}<em v-if="host.load1 != null"> {{ formatPct(loadBarPct, 0) }}%</em></b>
+          </div>
+          <div class="seg loadbar" :class="usageTone(loadBarPct)" :style="{ '--p': loadBarPct + '%' }"></div>
+        </div>
+        <div class="metric">
+          <div class="metric-top">
+            <span>磁盘</span>
+            <b>{{ diskTotalText }}<em v-if="diskSplitText" class="sub"> {{ diskSplitText }}</em></b>
+          </div>
+          <div class="seg diskbar" :style="{ '--p': diskBarPct + '%' }"></div>
         </div>
       </section>
 
@@ -980,10 +1060,23 @@ function linePath(values, w, h, domainMax) {
 .seg.cpu { --bar: #3dcec6; }
 .seg.mem { --bar: #f472b6; }
 .seg.swap { --bar: #fb923c; }
+.seg.power { --bar: #34d399; }
+.seg.loadbar { --bar: #60a5fa; }
+.seg.diskbar { --bar: #818cf8; }
 .seg.teal { --bar: #3dcec6; }
 .seg.warn { --bar: #f5b14a; }
 .seg.crit { --bar: #fb7185; }
+.seg.warm { --bar: #f5b14a; }
+.seg.hot { --bar: #fb7185; }
 .seg.sm { height: 8px; }
+.est, .metric-top .sub {
+  font-style: normal;
+  margin-left: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--muted);
+}
 
 .trend-wrap { flex: 1; min-height: 120px; }
 .trend { width: 100%; height: 128px; display: block; }
@@ -1298,6 +1391,11 @@ function linePath(values, w, h, domainMax) {
   .id-card .fact span { font-size: 1.2rem; font-weight: 700; }
   .id-card .fact b { font-size: clamp(1.55rem, 2vw, 2.15rem); font-weight: 700; }
   .id-ver { font-size: 1rem; margin-top: 4px; }
+  .res-card { gap: 16px; }
+  .res-card .metric { gap: 10px; }
+  .res-card .seg { height: 18px; }
+  .res-card .metric-top { font-size: 1rem; }
+  .res-card .metric-top b { font-size: 1.85rem; }
   .metric-top b { font-size: 1.7rem; }
   .health-cell b, .sum b { font-size: 2.15rem; }
 }

@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ log = logging.getLogger(__name__)
 # 上一轮计数器，用于把累计字节换成每秒速率。首轮速率为 None。
 _net_prev: dict[str, float | None] = {"mono": None, "sent": None, "recv": None}
 _disk_prev: dict[str, float | None] = {"mono": None, "read": None, "write": None}
+_disk_peaks: deque[float] = deque(maxlen=30)
+_rapl_prev: dict[str, tuple[float, int]] = {}
 
 
 def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
@@ -36,6 +39,8 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
         temps = _read_temps()
         up_bps, down_bps = _net_rates()
         read_bps, write_bps = _disk_rates()
+        disk_peak = _note_disk_peak(read_bps, write_bps)
+        power_watts, power_source = _read_power()
         try:
             uptime_sec = max(0, int(time.time() - psutil.boot_time()))
         except Exception:
@@ -57,6 +62,9 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
             "net_down_bps": None if down_bps is None else round(down_bps, 1),
             "disk_read_bps": None if read_bps is None else round(read_bps, 1),
             "disk_write_bps": None if write_bps is None else round(write_bps, 1),
+            "disk_bps_peak": None if disk_peak is None else round(disk_peak, 1),
+            "power_watts": power_watts,
+            "power_source": power_source,
             **_identity(),
             "public_ipv4": _public_ipv4_cached(),
             "mock": False,
@@ -105,6 +113,86 @@ def _disk_rates() -> tuple[float | None, float | None]:
     return read_bps, write_bps
 
 
+def _note_disk_peak(read_bps: float | None, write_bps: float | None) -> float | None:
+    if read_bps is None and write_bps is None:
+        return max(_disk_peaks) if _disk_peaks else None
+    total = (read_bps or 0) + (write_bps or 0)
+    _disk_peaks.append(total)
+    return max(_disk_peaks)
+
+
+def _read_power() -> tuple[float | None, str | None]:
+    ipmi = _ipmi_power_watts()
+    if ipmi is not None:
+        return round(ipmi, 1), "ipmi"
+    rapl = _rapl_power_watts()
+    if rapl is not None:
+        return round(rapl, 1), "rapl"
+    return None, None
+
+
+def _ipmi_power_watts() -> float | None:
+    if not shutil.which("ipmitool"):
+        return None
+    try:
+        result = subprocess.run(
+            ["ipmitool", "dcmi", "power", "reading"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception as exc:
+        log.info("ipmi power skipped: %s", exc)
+        return None
+    text = f"{result.stdout}\n{result.stderr}"
+    match = re.search(r"Instantaneous power reading:\s*(\d+(?:\.\d+)?)", text, re.I)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def _rapl_power_watts() -> float | None:
+    root = Path("/sys/class/powercap")
+    if not root.is_dir():
+        return None
+    domains: list[Path] = []
+    for zone in root.glob("intel-rapl:*"):
+        name_path = zone / "name"
+        energy = zone / "energy_uj"
+        if not energy.is_file():
+            continue
+        try:
+            name = name_path.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            continue
+        if name.startswith("package") or name == "dram":
+            domains.append(energy)
+    if not domains:
+        return None
+    now = time.monotonic()
+    total = 0.0
+    got_delta = False
+    for energy in domains:
+        try:
+            uj = int(energy.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        key = str(energy)
+        prev = _rapl_prev.get(key)
+        _rapl_prev[key] = (now, uj)
+        if prev is None:
+            continue
+        dt = now - prev[0]
+        delta = uj - prev[1]
+        if dt <= 0.2 or delta < 0:
+            continue
+        total += (delta / 1_000_000.0) / dt
+        got_delta = True
+    if not got_delta:
+        return None
+    return total
+
+
 def _mock_host() -> dict[str, Any]:
     return {
         "cpu_pct": 8.5,
@@ -123,6 +211,9 @@ def _mock_host() -> dict[str, Any]:
         "net_down_bps": 80_000.0,
         "disk_read_bps": 0.0,
         "disk_write_bps": 40_000.0,
+        "disk_bps_peak": 40_000.0,
+        "power_watts": None,
+        "power_source": None,
         "os": "Linux",
         "arch": "x86_64",
         "cpu_model": "MOCK CPU",
