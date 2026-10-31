@@ -236,11 +236,20 @@ const topContainers = computed(() => {
     }
     return (Number(b.cpu_pct) || -1) - (Number(a.cpu_pct) || -1)
   })
-  return ranked.slice(0, 8).map((c, i) => ({
+  return ranked.slice(0, 16).map((c, i) => ({
     ...c,
     rank: i + 1,
     hot: Number(c.cpu_pct) >= 50
   }))
+})
+
+const dockerCols = computed(() => {
+  const items = topContainers.value
+  if (!items.length) return []
+  const leftCount = Math.min(8, Math.ceil(items.length / 2))
+  const left = items.slice(0, leftCount)
+  const right = items.slice(leftCount, 16)
+  return right.length ? [left, right] : [left]
 })
 
 const recentAlerts = computed(() => alerts.value.slice(0, 5))
@@ -949,7 +958,11 @@ function linePath(values, w, h, domainMax) {
         <header class="mod-head">
           <span class="mid">M07</span>
           <span class="mod-title">Docker</span>
-          <a class="mod-link push" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">全部</a>
+          <div class="top-switch push">
+            <button type="button" class="chip" :class="{ on: topMetric === 'cpu' }" @click="topMetric = 'cpu'">按 CPU</button>
+            <button type="button" class="chip" :class="{ on: topMetric === 'mem' }" @click="topMetric = 'mem'">按内存</button>
+          </div>
+          <a class="mod-link" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">全部</a>
         </header>
         <div class="docker-body">
           <div class="docker-sums">
@@ -966,20 +979,10 @@ function linePath(values, w, h, domainMax) {
               <span>合计</span>
             </div>
           </div>
-          <div class="docker-main">
-            <div class="top-switch">
-              <button type="button" class="chip" :class="{ on: topMetric === 'cpu' }" @click="topMetric = 'cpu'">按 CPU</button>
-              <button type="button" class="chip" :class="{ on: topMetric === 'mem' }" @click="topMetric = 'mem'">按内存</button>
-            </div>
-            <div v-if="topContainers.length" class="ctr-list">
-              <div class="ctr ctr-head" aria-hidden="true">
-                <span></span>
-                <span></span>
-                <span class="stat">CPU</span>
-                <span class="stat">内存</span>
-              </div>
+          <div v-if="dockerCols.length" class="docker-cols">
+            <div v-for="(col, ci) in dockerCols" :key="ci" class="ctr-list">
               <div
-                v-for="c in topContainers"
+                v-for="c in col"
                 :key="c.id"
                 class="ctr"
                 :class="{ hot: c.hot }"
@@ -997,8 +1000,8 @@ function linePath(values, w, h, domainMax) {
                 </span>
               </div>
             </div>
-            <div v-else class="docker-empty">暂无容器</div>
           </div>
+          <div v-else class="docker-empty">暂无容器</div>
         </div>
       </section>
 
@@ -1698,19 +1701,20 @@ function linePath(values, w, h, domainMax) {
 }
 .docker-sums {
   flex: none;
-  width: 92px;
+  width: 72px;
   display: flex;
   flex-direction: column;
   justify-content: space-evenly;
-  gap: 6px;
+  gap: 4px;
 }
-.docker-main {
+.docker-cols {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+  overflow: hidden;
 }
 .sum {
   background: #f6f8fa;
@@ -1749,23 +1753,24 @@ function linePath(values, w, h, domainMax) {
 .health-sum .bad { color: var(--crit); }
 
 .ctr-list {
-  flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  justify-content: space-evenly;
-  gap: 2px;
+  justify-content: flex-start;
+  gap: 1px;
 }
 .ctr {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) minmax(88px, 112px) minmax(88px, 112px);
-  gap: 8px;
+  grid-template-columns: 10px minmax(0, 1fr) minmax(78px, 1.1fr) minmax(78px, 1.1fr);
+  gap: 4px;
   align-items: center;
-  padding: 1px 0;
-  font-size: 0.98rem;
-  border-radius: 8px;
+  padding: 0;
+  font-size: 0.78rem;
+  border-radius: 6px;
   flex: none;
+  line-height: 1.15;
 }
 .ctr.hot { background: #fff6e8; }
 .rank {
@@ -1958,7 +1963,10 @@ function linePath(values, w, h, domainMax) {
   }
   .cpu-sum { font-size: 0.72rem; }
   .docker-card { justify-content: space-between; }
-  .docker-card .sum b { font-size: 1.65rem; }
+  .docker-card .mod-head { flex-wrap: nowrap; }
+  .docker-card .sum { padding: 2px 6px; }
+  .docker-card .sum b { font-size: 1.5rem; }
+  .docker-card .sum span { font-size: 0.68rem; }
   .ctr-list { overflow: hidden; }
   .health-cell { padding: 6px 8px; }
   .health-cell b { font-size: 1.25rem; }
