@@ -33,7 +33,8 @@ const initial = loadState()
 export const nas = reactive({
   activeId: initial.activeId,
   profiles: initial.profiles,
-  tokenTick: 0
+  tokenTick: 0,
+  reach: {}
 })
 
 function persist() {
@@ -91,6 +92,98 @@ export function upsertProfile(profile) {
   else nas.profiles.push(next)
   persist()
   return next
+}
+
+export function updateProfile(id, { name, baseUrl }) {
+  const current = nas.profiles.find((p) => p.id === id)
+  if (!current) return false
+  const nextName = String(name || current.name || 'NAS').trim().slice(0, 32) || current.name
+  let urlChanged = false
+  if (id !== 'local') {
+    const nextUrl = normalizeBaseUrl(baseUrl)
+    urlChanged = nextUrl !== current.baseUrl
+    current.baseUrl = nextUrl
+  }
+  current.name = nextName
+  if (urlChanged) {
+    clearToken(id)
+    nas.reach[id] = 'logged-out'
+  }
+  persist()
+  return urlChanged
+}
+
+const PROBE_MS = 3000
+
+export function tabState(id) {
+  if (!hasToken(id)) return 'logged-out'
+  if (nas.reach[id] === 'offline') return 'offline'
+  return 'online'
+}
+
+export function markReach(id, state) {
+  if (!id) return
+  nas.reach[id] = state
+}
+
+export async function probeProfile(profile) {
+  if (!profile) return 'logged-out'
+  if (!hasToken(profile.id)) {
+    nas.reach[profile.id] = 'logged-out'
+    return 'logged-out'
+  }
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), PROBE_MS)
+  try {
+    const token = localStorage.getItem(tokenKey(profile.id))
+    const res = await fetch(`${apiRoot(profile)}/meta`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: ctrl.signal
+    })
+    if (res.status === 401) {
+      clearToken(profile.id)
+      nas.reach[profile.id] = 'logged-out'
+      if (profile.id === nas.activeId && !location.pathname.startsWith('/login')) {
+        location.assign('/login')
+      }
+      return 'logged-out'
+    }
+    nas.reach[profile.id] = res.ok ? 'online' : 'offline'
+    return nas.reach[profile.id]
+  } catch {
+    nas.reach[profile.id] = 'offline'
+    return 'offline'
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export async function loginProfile(profile, username, password) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), PROBE_MS)
+  try {
+    const res = await fetch(`${apiRoot(profile)}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+      signal: ctrl.signal
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const detail = data?.detail
+      const msg = (detail && typeof detail === 'object' ? detail.message : detail) || data?.message || '登录失败'
+      throw new Error(typeof msg === 'string' ? msg : '登录失败')
+    }
+    setToken(data.access_token, profile.id)
+    nas.reach[profile.id] = 'online'
+    return data
+  } catch (e) {
+    if (e?.name === 'AbortError') throw new Error('无法连接')
+    if (e instanceof TypeError) throw new Error('无法连接')
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export function removeProfile(id) {

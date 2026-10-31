@@ -1,8 +1,8 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { api } from '../api/client'
-import { activeProfile, nas, rememberLocalName } from '../nas/profiles'
+import { api, isUnreachable } from '../api/client'
+import { activeProfile, markReach, nas, rememberLocalName } from '../nas/profiles'
 import Alerts from './Alerts.vue'
 import Disks from './Disks.vue'
 import Docker from './Docker.vue'
@@ -368,18 +368,25 @@ const trendCaption = computed(() => {
 async function load() {
   try {
     const [m, s, a] = await Promise.all([
-      api('/meta'),
-      api('/metrics/snapshot'),
-      api('/alerts?limit=200').then((r) => r.items || [])
+      api('/meta', { timeout: 8000 }),
+      api('/metrics/snapshot', { timeout: 8000 }),
+      api('/alerts?limit=200', { timeout: 8000 }).then((r) => r.items || [])
     ])
     meta.value = m
     snap.value = s
     alerts.value = a
     rememberLocalName(m?.hostname)
     err.value = ''
+    markReach(activeProfile()?.id, 'online')
     armPoll()
   } catch (e) {
-    err.value = e.message || '加载失败'
+    const name = activeProfile()?.name || 'NAS'
+    if (isUnreachable(e)) {
+      err.value = `无法连接 ${name}`
+      markReach(activeProfile()?.id, 'offline')
+    } else {
+      err.value = e.message || '加载失败'
+    }
   }
   const [cpu, mem, load, temp, up, down, dock] = await Promise.all([
     safeHist('cpu.pct'),

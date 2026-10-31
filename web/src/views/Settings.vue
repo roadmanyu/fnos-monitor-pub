@@ -4,11 +4,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/client'
 import {
   hasToken,
+  loginProfile,
   nas,
   normalizeBaseUrl,
   removeProfile,
   setActive,
-  setToken,
+  tabState,
+  updateProfile,
   upsertProfile
 } from '../nas/profiles'
 
@@ -21,6 +23,13 @@ const form = ref({ name: '', baseUrl: '', username: 'admin', password: '' })
 const formErr = ref('')
 const formMsg = ref('')
 const saving = ref(false)
+const editingId = ref('')
+const editForm = ref({ name: '', baseUrl: '' })
+const editErr = ref('')
+const reloginId = ref('')
+const reloginForm = ref({ username: 'admin', password: '' })
+const reloginErr = ref('')
+const reloginBusy = ref(false)
 
 async function loadPage() {
   try {
@@ -34,6 +43,67 @@ async function loadPage() {
 function openNas(id) {
   setActive(id)
   router.push(hasToken(id) ? '/' : '/login')
+}
+
+function statusText(id) {
+  const state = tabState(id)
+  if (state === 'offline') return '离线'
+  if (state === 'logged-out') return '未登录'
+  return '已登录'
+}
+
+function startEdit(p) {
+  editingId.value = p.id
+  editForm.value = { name: p.name, baseUrl: p.baseUrl || '' }
+  editErr.value = ''
+  reloginId.value = ''
+}
+
+function saveEdit(p) {
+  editErr.value = ''
+  try {
+    const urlChanged = updateProfile(p.id, {
+      name: editForm.value.name,
+      baseUrl: p.id === 'local' ? '' : editForm.value.baseUrl
+    })
+    editingId.value = ''
+    if (urlChanged) {
+      formMsg.value = `「${editForm.value.name || p.name}」地址已更改，请重新登录。`
+      reloginId.value = p.id
+      reloginForm.value = { username: 'admin', password: '' }
+    }
+  } catch {
+    editErr.value = '地址需要是 http://局域网IP:8787'
+  }
+}
+
+function startRelogin(p) {
+  reloginId.value = p.id
+  reloginErr.value = ''
+  reloginForm.value = { username: 'admin', password: '' }
+  editingId.value = ''
+}
+
+async function doRelogin(p) {
+  reloginErr.value = ''
+  reloginBusy.value = true
+  try {
+    await loginProfile(p, reloginForm.value.username, reloginForm.value.password)
+    reloginForm.value.password = ''
+    reloginId.value = ''
+    setActive(p.id)
+    router.push('/')
+  } catch (e) {
+    reloginErr.value = e.message || '登录失败'
+  } finally {
+    reloginBusy.value = false
+  }
+}
+
+function askRemove(p) {
+  if (window.confirm(`移除「${p.name}」？这台浏览器里的登录状态会一起清掉。`)) {
+    removeProfile(p.id)
+  }
 }
 
 async function addNas() {
@@ -54,21 +124,7 @@ async function addNas() {
   })
   saving.value = true
   try {
-    const res = await fetch(`${base}/api/v1/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: form.value.username,
-        password: form.value.password
-      })
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) {
-      const detail = data?.detail
-      const msg = (detail && typeof detail === 'object' ? detail.message : detail) || data?.message || '登录失败'
-      throw new Error(typeof msg === 'string' ? msg : '登录失败')
-    }
-    setToken(data.access_token, profile.id)
+    await loginProfile(profile, form.value.username, form.value.password)
     setActive(profile.id)
     form.value.password = ''
     router.push('/')
@@ -116,9 +172,29 @@ watch(() => nas.activeId, loadPage)
           <b>{{ p.name }}</b>
           <div class="muted">{{ p.baseUrl || '当前站点' }}</div>
         </div>
-        <span class="pill" :class="hasToken(p.id) ? 'ok' : 'muted'">{{ hasToken(p.id) ? '已登录' : '未登录' }}</span>
+        <span class="pill" :class="tabState(p.id) === 'online' ? 'ok' : 'muted'">{{ statusText(p.id) }}</span>
         <button class="btn ghost" type="button" @click="openNas(p.id)">打开</button>
-        <button v-if="p.id !== 'local'" class="btn ghost" type="button" @click="removeProfile(p.id)">移除</button>
+        <button class="btn ghost" type="button" @click="startEdit(p)">编辑</button>
+        <button class="btn ghost" type="button" @click="startRelogin(p)">重新登录</button>
+        <button v-if="p.id !== 'local'" class="btn ghost" type="button" @click="askRemove(p)">移除</button>
+        <form v-if="editingId === p.id" class="add-form nas-edit" @submit.prevent="saveEdit(p)">
+          <label>显示名<input v-model="editForm.name" /></label>
+          <label v-if="p.id !== 'local'">API 地址<input v-model="editForm.baseUrl" placeholder="http://192.168.1.8:8787" /></label>
+          <p v-if="editErr" style="color:var(--crit);margin:0">{{ editErr }}</p>
+          <div class="row-actions">
+            <button class="btn" type="submit">保存</button>
+            <button class="btn ghost" type="button" @click="editingId = ''">取消</button>
+          </div>
+        </form>
+        <form v-if="reloginId === p.id" class="add-form nas-edit" @submit.prevent="doRelogin(p)">
+          <label>用户名<input v-model="reloginForm.username" autocomplete="username" /></label>
+          <label>密码<input v-model="reloginForm.password" type="password" autocomplete="current-password" /></label>
+          <p v-if="reloginErr" style="color:var(--crit);margin:0">{{ reloginErr }}</p>
+          <div class="row-actions">
+            <button class="btn" type="submit" :disabled="reloginBusy">{{ reloginBusy ? '登录中…' : '登录' }}</button>
+            <button class="btn ghost" type="button" @click="reloginId = ''">取消</button>
+          </div>
+        </form>
       </div>
       <form class="add-form" @submit.prevent="addNas">
         <label>显示名<input v-model="form.name" placeholder="客厅" /></label>
@@ -147,6 +223,8 @@ watch(() => nas.activeId, loadPage)
   border-bottom: 1px solid var(--border);
 }
 .nas-row .muted { font-size: 0.8rem; }
+.nas-edit { flex: 1 0 100%; }
+.row-actions { display: flex; gap: 8px; }
 .add-form {
   display: grid;
   gap: 10px;
