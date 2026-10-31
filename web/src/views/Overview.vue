@@ -46,7 +46,23 @@ const filesystems = computed(() => {
 })
 const disks = computed(() => snap.value?.disks_smart_summary || [])
 const cpuTemp = computed(() => host.value?.temps_c?.cpu ?? null)
-const cores = computed(() => (Array.isArray(host.value?.cpu_cores) ? host.value.cpu_cores : []))
+const cores = computed(() => {
+  const raw = host.value?.cpu_cores
+  if (!Array.isArray(raw)) return []
+  return raw.map((c) => {
+    if (c != null && typeof c === 'object') {
+      return {
+        pct: c.pct == null ? null : Number(c.pct),
+        freq: c.freq_mhz == null ? null : Number(c.freq_mhz),
+        freqMax: c.freq_max_mhz == null ? null : Number(c.freq_max_mhz),
+        temp: c.temp_c == null ? null : Number(c.temp_c)
+      }
+    }
+    const n = Number(c)
+    return { pct: Number.isNaN(n) ? null : n, freq: null, freqMax: null, temp: null }
+  })
+})
+const deskLayout = ref(false)
 const uptimeText = computed(() => formatUptime(host.value?.uptime_sec))
 const heroName = computed(() => activeProfile()?.name || meta.value?.hostname || '—')
 const heroHost = computed(() => {
@@ -98,8 +114,21 @@ const netChartText = computed(() => {
 const clockText = computed(() => formatClock(now.value, tz.value))
 const dateText = computed(() => formatDateLine(now.value, tz.value))
 
-const cpuFrac = computed(() => clampPct(host.value?.cpu_pct) / 100)
-const donutC = 2 * Math.PI * 46
+const freqScale = computed(() => {
+  const maxes = cores.value.map((c) => Number(c.freqMax)).filter((n) => n > 0)
+  if (maxes.length) return Math.max(...maxes)
+  const curs = cores.value.map((c) => Number(c.freq)).filter((n) => n > 0)
+  return curs.length ? Math.max(...curs) : null
+})
+
+const coreGrid = computed(() => {
+  const n = cores.value.length
+  if (!n) return { cols: 1, rows: 1 }
+  const cols = deskLayout.value
+    ? (n <= 4 ? n : n <= 6 ? 3 : n <= 12 ? 4 : Math.min(6, Math.ceil(Math.sqrt(n))))
+    : Math.min(2, n)
+  return { cols, rows: Math.ceil(n / cols) }
+})
 
 const tempState = computed(() => {
   const t = cpuTemp.value
@@ -401,7 +430,13 @@ function rateLabel(value, known) {
   return formatRate(value) || '采集中'
 }
 
+function syncDeskLayout() {
+  deskLayout.value = window.matchMedia('(min-width: 1200px)').matches
+}
+
 onMounted(() => {
+  syncDeskLayout()
+  window.addEventListener('resize', syncDeskLayout)
   load()
   armPoll()
   clock = setInterval(() => { now.value = new Date() }, 1000)
@@ -417,8 +452,48 @@ watch(() => route.hash, (hash) => {
 onUnmounted(() => {
   clearInterval(poll)
   clearInterval(clock)
+  window.removeEventListener('resize', syncDeskLayout)
   document.body.classList.remove('sheet-open')
 })
+
+function ringArc(r, frac) {
+  const c = 2 * Math.PI * r
+  const f = frac == null || Number.isNaN(Number(frac)) ? 0 : Math.min(1, Math.max(0, Number(frac)))
+  return { dash: `${c.toFixed(2)} ${c.toFixed(2)}`, offset: (c * (1 - f)).toFixed(2) }
+}
+
+function coreArcs(core) {
+  const scale = freqScale.value
+  const freq = core.freq == null || !scale ? null : Number(core.freq) / scale
+  const temp = core.temp == null ? null : Number(core.temp) / 100
+  const pct = core.pct == null ? null : clampPct(core.pct) / 100
+  return {
+    temp: ringArc(48, temp),
+    use: ringArc(36, pct),
+    freq: ringArc(24, freq)
+  }
+}
+
+function corePctText(v) {
+  if (v == null || Number.isNaN(Number(v))) return '—'
+  return `${Math.round(Number(v))}%`
+}
+
+function coreFreqText(v) {
+  if (v == null || Number.isNaN(Number(v))) return '—'
+  const n = Number(v)
+  if (n >= 1000) {
+    const g = n / 1000
+    const digits = g >= 10 ? 0 : 1
+    return `${g.toFixed(digits).replace(/\.0$/, '')}G`
+  }
+  return `${Math.round(n)}M`
+}
+
+function coreTempText(v) {
+  if (v == null || Number.isNaN(Number(v))) return '—'
+  return `${Math.round(Number(v))}°`
+}
 
 const TREND_DRAW = {
   cpu: { color: '#2ec9c0' },
@@ -672,56 +747,42 @@ function linePath(values, w, h, domainMax) {
         <header class="mod-head">
           <span class="mid">M05</span>
           <span class="mod-title">CPU</span>
-          <span v-if="tempState" class="pill head-pill push" :class="tempState.cls">
-            <i class="dot"></i>{{ tempState.text }}
-          </span>
-        </header>
-        <div class="cpu-body">
-          <div class="donut-wrap">
-            <svg viewBox="0 0 120 120" class="donut">
-              <circle cx="60" cy="60" r="46" fill="none" stroke="#eef1f4" stroke-width="10" />
-              <circle
-                cx="60" cy="60" r="46" fill="none"
-                stroke="#2ec9c0" stroke-width="10" stroke-linecap="round"
-                :stroke-dasharray="donutC"
-                :stroke-dashoffset="donutC * (1 - cpuFrac)"
-                transform="rotate(-90 60 60)"
-              />
-            </svg>
-            <div class="donut-label">
-              <strong>{{ host.cpu_pct == null ? '—' : formatPct(host.cpu_pct, Number(host.cpu_pct) < 10 ? 1 : 0) + '%' }}</strong>
-              <span>整机</span>
-            </div>
-          </div>
-          <div class="cpu-side">
-            <div v-if="cpuTemp != null" class="cpu-temp">{{ cpuTemp }}°C</div>
-            <div class="load-pills">
-              <span>1m {{ host.load1 ?? '—' }}</span>
-              <span>5m {{ host.load5 ?? '—' }}</span>
-            </div>
-            <div v-if="cores.length > 1" class="core-row">
-              <span v-for="(c, i) in cores.slice(0, 8)" :key="i" class="core" :title="'核心 ' + i">
-                <i :style="{ height: clampPct(c) + '%' }"></i>{{ Math.round(c) }}
-              </span>
-              <span v-if="cores.length > 8" class="muted">+{{ cores.length - 8 }}</span>
-            </div>
-            <button
-              type="button"
-              class="fold"
-              :disabled="!otherTemps.length"
-              @click="tempsOpen = !tempsOpen"
-            >
-              其它温度 {{ otherTemps.length ? otherTemps.length : '暂无数据' }}
-              <span v-if="otherTemps.length">{{ tempsOpen ? '收起' : '展开' }}</span>
+          <div class="head-right">
+            <span v-if="host.cpu_pct != null" class="cpu-sum">整机 {{ formatPct(host.cpu_pct, 0) }}%</span>
+            <button v-if="otherTemps.length" type="button" class="fold" @click="tempsOpen = true">
+              其它 {{ otherTemps.length }}
             </button>
-            <ul v-if="tempsOpen && otherTemps.length" class="temp-list">
-              <li v-for="t in otherTemps" :key="t.key">
-                <span>{{ t.key }}</span>
-                <b>{{ t.value }}°C</b>
-              </li>
-            </ul>
+            <span v-if="tempState" class="pill head-pill" :class="tempState.cls">
+              <i class="dot"></i>{{ tempState.text }}
+            </span>
           </div>
+        </header>
+        <div v-if="cores.length" class="core-grid" :style="{
+          gridTemplateColumns: `repeat(${coreGrid.cols}, minmax(0, 1fr))`,
+          gridTemplateRows: deskLayout ? `repeat(${coreGrid.rows}, minmax(0, 1fr))` : 'auto'
+        }">
+          <article v-for="(core, i) in cores" :key="i" class="core-unit">
+            <div class="ring-wrap">
+              <svg viewBox="0 0 120 120" class="core-svg" :aria-label="'核 ' + i">
+                <g fill="none" stroke-linecap="round" transform="rotate(-90 60 60)">
+                  <circle cx="60" cy="60" r="48" stroke="#f6e7da" stroke-width="9" />
+                  <circle cx="60" cy="60" r="48" stroke="#f08a3a" stroke-width="9" :stroke-dasharray="coreArcs(core).temp.dash" :stroke-dashoffset="coreArcs(core).temp.offset" />
+                  <circle cx="60" cy="60" r="36" stroke="#e4ebf8" stroke-width="9" />
+                  <circle cx="60" cy="60" r="36" stroke="#5b8def" stroke-width="9" :stroke-dasharray="coreArcs(core).use.dash" :stroke-dashoffset="coreArcs(core).use.offset" />
+                  <circle cx="60" cy="60" r="24" stroke="#e3f6f4" stroke-width="9" />
+                  <circle cx="60" cy="60" r="24" stroke="#2ec9c0" stroke-width="9" :stroke-dasharray="coreArcs(core).freq.dash" :stroke-dashoffset="coreArcs(core).freq.offset" />
+                </g>
+              </svg>
+              <span class="ring-name">核{{ i }}</span>
+            </div>
+            <p class="core-line">
+              <b class="use">{{ corePctText(core.pct) }}</b>
+              <b class="hz">{{ coreFreqText(core.freq) }}</b>
+            </p>
+            <p class="core-line deg" :class="{ miss: core.temp == null }">{{ coreTempText(core.temp) }}</p>
+          </article>
         </div>
+        <div v-else class="net-empty">暂无 CPU</div>
       </section>
 
       <section class="card mod span-8 health-card">
@@ -857,6 +918,21 @@ function linePath(values, w, h, domainMax) {
         </div>
         <p v-else class="muted empty-inline">暂无告警</p>
       </section>
+    </div>
+
+    <div v-if="tempsOpen" class="temp-pop" @click.self="tempsOpen = false">
+      <div class="temp-pop-card" role="dialog" aria-label="其它温度">
+        <header>
+          <strong>其它温度</strong>
+          <button type="button" class="fold" @click="tempsOpen = false">关闭</button>
+        </header>
+        <ul class="temp-list">
+          <li v-for="t in otherTemps" :key="t.key">
+            <span>{{ t.key }}</span>
+            <b>{{ t.value }}°C</b>
+          </li>
+        </ul>
+      </div>
     </div>
 
     <details id="disk-detail" class="drawer" @toggle="onDrawerToggle">
@@ -1251,90 +1327,120 @@ function linePath(values, w, h, domainMax) {
 }
 .empty.grow { min-height: 120px; }
 
-.cpu-body {
+.cpu-card .head-right {
+  margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex: 1;
+  gap: 8px;
+  min-width: 0;
 }
-.donut-wrap { position: relative; width: 132px; height: 132px; flex: none; }
-.donut { width: 132px; height: 132px; }
-.donut-label {
+.cpu-sum {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.core-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 6px 8px;
+  align-items: stretch;
+}
+.core-unit {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  container-type: inline-size;
+}
+.ring-wrap {
+  position: relative;
+  width: min(100%, 148px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+.core-svg { width: 100%; height: 100%; display: block; }
+.ring-name {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  align-content: center;
-  text-align: center;
-}
-.donut-label strong {
-  font-size: 1.35rem;
-  letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums;
-}
-.donut-label span { color: var(--muted); font-size: 0.75rem; }
-.cpu-side { display: grid; gap: 8px; min-width: 0; }
-.cpu-temp {
-  font-size: 1.8rem;
+  font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: -0.04em;
-  color: #f08a3a;
-  font-variant-numeric: tabular-nums;
+  color: #8b95a5;
+  pointer-events: none;
 }
-.load-pills { display: flex; gap: 8px; flex-wrap: wrap; }
-.load-pills span {
+.core-line {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.15;
+  font-size: clamp(12px, 18cqw, 16px);
+  white-space: nowrap;
+}
+.core-line .use { color: #3d6fd8; }
+.core-line .hz { color: #0f8f88; }
+.core-line.deg { color: #e07a2f; font-size: clamp(13px, 20cqw, 18px); }
+.core-line.deg.miss { color: #9aa3b2; }
+.fold {
+  border: 0;
   background: #f4f6f8;
+  color: #607086;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 0.8rem;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
-.core-row { display: flex; gap: 6px; align-items: flex-end; flex-wrap: wrap; }
-.core {
-  width: 22px;
-  height: 36px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  align-items: center;
-  font-size: 0.62rem;
-  color: #607086;
-  font-variant-numeric: tabular-nums;
-}
-.core i {
-  display: block;
-  width: 8px;
-  background: #3dcec6;
-  border-radius: 99px;
-  margin-bottom: 2px;
-  min-height: 2px;
-}
-.fold {
-  justify-self: start;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
-  padding: 0;
   cursor: pointer;
+  white-space: nowrap;
 }
-.fold:disabled { cursor: default; }
-.fold span { margin-left: 6px; color: var(--teal-ink); }
+.temp-pop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(28, 36, 48, 0.38);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.temp-pop-card {
+  width: min(420px, 100%);
+  max-height: min(70vh, 480px);
+  overflow: auto;
+  background: #fff;
+  border-radius: 16px;
+  padding: 16px 18px 18px;
+  box-shadow: var(--shadow);
+}
+.temp-pop-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
 .temp-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 4px;
+  gap: 8px;
 }
 .temp-list li {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 0.78rem;
+  gap: 12px;
+  font-size: 0.95rem;
 }
 .temp-list span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .temp-list b { font-variant-numeric: tabular-nums; }
@@ -1542,7 +1648,19 @@ function linePath(values, w, h, domainMax) {
   .trend-card .legend { flex-wrap: nowrap; gap: 4px; }
   .trend-card .chip { min-height: 26px; font-size: 0.68rem; padding: 2px 6px; }
   .trend-card .y-axis, .trend-card .x-axis, .trend-card .trend-caption { font-size: 0.75rem; }
-  .donut-wrap, .donut { width: 88px; height: 88px; }
+  .cpu-card { justify-content: space-evenly; }
+  .core-grid { height: 100%; }
+  .core-unit { height: 100%; justify-content: space-evenly; }
+  .ring-wrap {
+    flex: 1 1 auto;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: calc(100% - 2.4em);
+    min-height: 0;
+    aspect-ratio: 1;
+  }
+  .cpu-sum { font-size: 0.72rem; }
   .ctr-list { flex: 1; min-height: 0; max-height: none; }
   .health-cell { padding: 6px 8px; }
   .health-cell b, .sum b { font-size: 1.25rem; }
@@ -1577,7 +1695,11 @@ function linePath(values, w, h, domainMax) {
   .net-card .k { font-size: 1.05rem; }
   .net-empty { min-height: 120px; font-size: 1.45rem; }
   .health-cell b, .sum b { font-size: 1.45rem; }
-  .donut-wrap, .donut { width: 148px; height: 148px; }
+  .ring-wrap { width: min(46vw, 168px); }
+  .core-line { font-size: 1rem; }
+  .core-line.deg { font-size: 1.15rem; }
+  .cpu-card .fold { min-height: 44px; padding: 0 14px; }
+  .ring-name { font-size: 0.85rem; }
   .ctr-list { max-height: none; }
   .disk { flex-basis: 46%; }
   .health-sum { font-size: 0.85rem; }

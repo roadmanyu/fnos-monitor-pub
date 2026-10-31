@@ -36,7 +36,7 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
             load1, load5, _load15 = psutil.getloadavg()
         except (AttributeError, OSError):
             load1 = load5 = 0.0
-        temps = _read_temps()
+        temps, core_temps = _temperature_bundle(len(per))
         up_bps, down_bps = _net_rates()
         read_bps, write_bps = _disk_rates()
         disk_peak = _note_disk_peak(read_bps, write_bps)
@@ -47,7 +47,7 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
             uptime_sec = None
         return {
             "cpu_pct": cpu,
-            "cpu_cores": [round(float(x), 1) for x in per],
+            "cpu_cores": _build_cpu_cores(per, core_temps),
             "mem_total_bytes": int(mem.total),
             "mem_used_bytes": int(mem.used),
             "mem_used_pct": round(mem.percent, 2),
@@ -195,8 +195,15 @@ def _rapl_power_watts() -> float | None:
 
 def _mock_host() -> dict[str, Any]:
     return {
-        "cpu_pct": 8.5,
-        "cpu_cores": [6.0, 11.0],
+        "cpu_pct": 9.7,
+        "cpu_cores": [
+            {"pct": 20.0, "freq_mhz": 800, "freq_max_mhz": 3400, "temp_c": 36.0},
+            {"pct": 8.0, "freq_mhz": 800, "freq_max_mhz": 3400, "temp_c": 37.0},
+            {"pct": 5.0, "freq_mhz": 831, "freq_max_mhz": 3400, "temp_c": 35.0},
+            {"pct": 6.0, "freq_mhz": 800, "freq_max_mhz": 3400, "temp_c": 35.0},
+            {"pct": 11.0, "freq_mhz": 814, "freq_max_mhz": 3400, "temp_c": 37.0},
+            {"pct": 8.0, "freq_mhz": 800, "freq_max_mhz": 3400, "temp_c": 35.0},
+        ],
         "mem_total_bytes": 16 * 1024**3,
         "mem_used_bytes": 6 * 1024**3,
         "mem_used_pct": 37.5,
@@ -205,7 +212,7 @@ def _mock_host() -> dict[str, Any]:
         "swap_used_pct": 12.0,
         "load1": 0.2,
         "load5": 0.3,
-        "temps_c": {"cpu": 42.0, "other": {}},
+        "temps_c": {"cpu": 37.0, "other": {"nvme.Composite": 41.0}},
         "uptime_sec": 3600 * 24,
         "net_up_bps": 12_000.0,
         "net_down_bps": 80_000.0,
@@ -408,30 +415,117 @@ def _parse_ipv4(text: str) -> str | None:
         return None
 
 
-def _read_temps() -> dict[str, Any]:
-    out: dict[str, Any] = {"cpu": None, "other": {}}
+_CORE_TEMP_RE = re.compile(r"(?:core|cpu)\s*(\d+)\b", re.I)
+_PKG_TEMP_RE = re.compile(r"package|tctl|tdie|composite", re.I)
+_CORE_SENSOR_NAMES = ("coretemp", "k10temp", "cpu_thermal", "cpu-thermal", "acpitz", "cpu")
+
+
+def _sensor_rows() -> list[tuple[str, str, float]]:
     try:
-        sensors = psutil.sensors_temperatures(fahrenheit=False)
+        sensors = psutil.sensors_temperatures(fahrenheit=False) or {}
     except Exception:
-        return out
-    if not sensors:
-        return out
-    # 常见键：coretemp, k10temp, cpu_thermal, acpitz
-    preferred = ("coretemp", "k10temp", "cpu_thermal", "acpitz", "cpu")
-    cpu_val = None
-    for name in preferred:
-        if name in sensors and sensors[name]:
-            entries = sensors[name]
-            vals = [e.current for e in entries if e.current is not None]
-            if vals:
-                cpu_val = max(vals)
-                break
-    other = {}
+        return []
+    rows: list[tuple[str, str, float]] = []
     for name, entries in sensors.items():
-        for e in entries:
-            key = f"{name}.{e.label or 'temp'}"
-            if e.current is not None:
-                other[key] = round(e.current, 1)
-    out["cpu"] = round(cpu_val, 1) if cpu_val is not None else None
-    out["other"] = other
-    return out
+        for entry in entries or []:
+            if entry.current is None:
+                continue
+            rows.append((str(name), (entry.label or "").strip(), round(float(entry.current), 1)))
+    return rows
+
+
+def _temperature_bundle(n: int) -> tuple[dict[str, Any], list[float | None]]:
+    """整机温度、其它传感器，以及按 Core N 映射的每核温度。对不上的核为 None。"""
+    rows = _sensor_rows()
+    core_temps: list[float | None] = [None] * n
+    used: set[int] = set()
+    for i, (_name, label, val) in enumerate(rows):
+        match = _CORE_TEMP_RE.search(label)
+        if not match:
+            continue
+        idx = int(match.group(1))
+        if 0 <= idx < n and core_temps[idx] is None:
+            core_temps[idx] = val
+            used.add(i)
+    if n and all(v is None for v in core_temps):
+        candidates = [
+            (i, val)
+            for i, (name, label, val) in enumerate(rows)
+            if name.lower() in _CORE_SENSOR_NAMES
+            and not _PKG_TEMP_RE.search(label)
+            and not _CORE_TEMP_RE.search(label)
+        ]
+        if len(candidates) == n:
+            for slot, (i, val) in enumerate(candidates):
+                core_temps[slot] = val
+                used.add(i)
+    by_name: dict[str, list[float]] = {}
+    for name, _label, val in rows:
+        by_name.setdefault(name, []).append(val)
+    cpu_val = None
+    for name in _CORE_SENSOR_NAMES:
+        if by_name.get(name):
+            cpu_val = max(by_name[name])
+            break
+    other: dict[str, float] = {}
+    for i, (name, label, val) in enumerate(rows):
+        if i in used:
+            continue
+        other[f"{name}.{label or 'temp'}"] = val
+    temps = {"cpu": None if cpu_val is None else round(float(cpu_val), 1), "other": other}
+    return temps, core_temps
+
+
+def _freq_value(raw: float | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return int(round(n))
+
+
+def _read_freqs(n: int) -> tuple[list[int | None], list[int | None]]:
+    currents: list[int | None] = [None] * n
+    maxes: list[int | None] = [None] * n
+    per = None
+    try:
+        per = psutil.cpu_freq(percpu=True)
+    except Exception:
+        per = None
+    if per:
+        for i in range(min(n, len(per))):
+            item = per[i]
+            if not item:
+                continue
+            currents[i] = _freq_value(item.current)
+            maxes[i] = _freq_value(item.max)
+        if any(v is not None for v in currents):
+            return currents, maxes
+    one = None
+    try:
+        one = psutil.cpu_freq(percpu=False)
+    except Exception:
+        one = None
+    if one and n:
+        cur = _freq_value(one.current)
+        mx = _freq_value(one.max)
+        return [cur] * n, [mx] * n
+    return currents, maxes
+
+
+def _build_cpu_cores(per: list[float], core_temps: list[float | None]) -> list[dict[str, Any]]:
+    n = len(per)
+    currents, maxes = _read_freqs(n)
+    cores = []
+    for i, pct in enumerate(per):
+        cores.append({
+            "pct": round(float(pct), 1),
+            "freq_mhz": currents[i] if i < len(currents) else None,
+            "freq_max_mhz": maxes[i] if i < len(maxes) else None,
+            "temp_c": core_temps[i] if i < len(core_temps) else None,
+        })
+    return cores
