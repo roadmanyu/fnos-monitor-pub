@@ -10,7 +10,7 @@ auth:
   jwt_expire_sec: 86400
 
 collect:
-  interval_sec: 30
+  interval_sec: 2
   fs_interval_sec: 60
   retention_days: 7
   # true：无 Docker/SMART 时用模拟数据，便于开发机跑通
@@ -22,6 +22,8 @@ collect:
     - "/run"
     - "/var/lib/docker"
     - "/snap"
+  # 磁盘吞吐条满格（字节/秒）。0 表示按近期采样峰值归一。
+  disk_bps_cap: 0
 
 smart:
   enabled: true
@@ -33,6 +35,21 @@ smart:
 docker:
   enabled: true
   watch_containers: []
+
+power:
+  # 电源额定功率（瓦）。资源卡功耗条 = 当前瓦数 / 该值。
+  # 设为 0 则只显示瓦数，不画百分比。IPMI 读到的是整机功率；RAPL 只是封装+内存估算。
+  rated_watts: 200
+
+fans:
+  # 真调速默认开启。仅当对应 hwmon pwm 可写且写后读回一致时才会生效。
+  control_enabled: true
+  # 手动 PWM 下限（0–100）。更低的请求会被拒绝，避免停转。
+  min_pwm_percent: 25
+  presets:
+    silent: 30
+    normal: 55
+    performance: 85
 
 alerts:
   enabled: true

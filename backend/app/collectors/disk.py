@@ -41,18 +41,19 @@ def collect_filesystems(
                     "id": fid,
                     "mount": mp,
                     "device": p.device,
+                    "fstype": p.fstype or "",
                     "total_bytes": int(u.total),
                     "used_bytes": int(u.used),
                     "used_pct": round(u.percent, 2),
                 }
             )
         if not result and mock_on_failure:
-            return [_mock_fs()]
+            return _mock_filesystems()
         return result
     except Exception as e:
         log.warning("fs collect failed: %s", e)
         if mock_on_failure:
-            return [_mock_fs()]
+            return _mock_filesystems()
         raise
 
 
@@ -61,13 +62,23 @@ def _mount_id(mp: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]", "_", s)[:64]
 
 
-def _mock_fs() -> dict[str, Any]:
-    return {
-        "id": "vol1",
-        "mount": "/vol1",
-        "device": "/dev/mock",
-        "total_bytes": 8 * 1024**4,
-        "used_bytes": int(8 * 1024**4 * 0.42),
-        "used_pct": 42.0,
-        "mock": True,
-    }
+def _mock_filesystems() -> list[dict[str, Any]]:
+    specs = [
+        ("/", "ext4", 64 * 1024**3, 0.40),
+        ("/vol1", "ext4", 18 * 1024**4, 0.48),
+        ("/vol2", "btrfs", 48 * 1024**3, 0.13),
+        ("/vol3", "ext4", 120 * 1024**3, 0.73),
+    ]
+    rows = []
+    for mount, fstype, total, ratio in specs:
+        rows.append({
+            "id": _mount_id(mount),
+            "mount": mount,
+            "device": "/dev/mock",
+            "fstype": fstype,
+            "total_bytes": total,
+            "used_bytes": int(total * ratio),
+            "used_pct": round(ratio * 100, 2),
+            "mock": True,
+        })
+    return rows

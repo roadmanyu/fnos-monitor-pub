@@ -2,6 +2,8 @@
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { api } from '../api/client'
 
+defineProps({ embedded: { type: Boolean, default: false } })
+
 const containers = ref([])
 const filter = ref('all')
 const err = ref('')
@@ -22,13 +24,13 @@ async function load() {
   }
 }
 
-onMounted(() => { load(); timer = setInterval(load, 30000) })
+onMounted(() => { load(); timer = setInterval(load, 2000) })
 onUnmounted(() => clearInterval(timer))
 </script>
 
 <template>
-  <div class="page">
-    <h2>Docker</h2>
+  <div :class="embedded ? 'embed' : 'page'">
+    <h2 v-if="!embedded">Docker</h2>
     <p v-if="err" style="color:var(--crit)">{{ err }}</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn" :class="filter==='all'?'':'ghost'" @click="filter='all'">全部</button>

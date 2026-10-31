@@ -2,6 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { api } from '../api/client'
 
+defineProps({ embedded: { type: Boolean, default: false } })
+
 const items = ref([])
 const rules = ref(null)
 const severity = ref('')
@@ -28,8 +30,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <h2>告警</h2>
+  <div :class="embedded ? 'embed' : 'page'">
+    <h2 v-if="!embedded">告警</h2>
     <p v-if="err" style="color:var(--crit)">{{ err }}</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn" :class="severity===''?'':'ghost'" @click="severity='';load()">全部</button>

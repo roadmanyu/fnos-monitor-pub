@@ -29,6 +29,17 @@ docker compose up -d --build
 
 5. 浏览器访问：`http://<NAS局域网IP>:8787`
 
+### 第二台 NAS（标签切换，不跨机采集）
+
+每台 NAS 各自跑一份本监控。在已经打开的页面里：
+
+1. 顶栏点 **+ 添加**，或打开设置里的「多台 NAS」。
+2. 填显示名和对方地址，例如 `http://192.168.1.8:8787`（不要带 `/api`）。
+3. 填那台机器自己的用户名密码，点「添加并登录」。令牌只存在这台浏览器，不保存密码。
+4. 顶栏出现新标签。点标签即改用那台的 API。磁盘、Docker、告警在总览页往下展开，不再占主导航。
+
+两台都要能在局域网互相访问 8787，且不要把端口映射到公网。
+
 权限说明：
 
 - 挂载 `/var/run/docker.sock:ro` 以列出容器。  
@@ -37,7 +48,7 @@ docker compose up -d --build
 
 ## 开发机本地运行（无真实 NAS）
 
-无 Docker / 无 smartctl / 无 docker.sock 时，配置项 `collect.mock_on_failure: true`（默认）会返回**模拟**磁盘、SMART、容器数据，主机 CPU/内存仍尽量采真实值。界面 meta 会标「模拟数据」。
+无 Docker / 无 smartctl / 无 docker.sock 时，配置项 `collect.mock_on_failure: true`（默认）会返回**模拟**磁盘、SMART、容器数据，主机 CPU、内存、交换和网卡吞吐仍尽量采真实值。界面 meta 会标「模拟数据」。
 
 ```bash
 # 后端

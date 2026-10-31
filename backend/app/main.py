@@ -10,10 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import alerts, auth, disks, docker, meta, metrics
+from app.api.v1 import alerts, auth, disks, docker, fans, meta, metrics
 from app.collectors.loop import CollectorLoop
 from app.config import data_dir, load_config
 from app.storage.sqlite_store import Store
+from app.version import app_version as _app_version
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,12 +40,12 @@ async def lifespan(app: FastAPI):
     log.info("fnos-monitor stopping")
 
 
-app = FastAPI(title="fnOS Monitor", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="fnOS Monitor", version=_app_version(), lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -55,6 +56,7 @@ app.include_router(meta.router, prefix=API)
 app.include_router(metrics.router, prefix=API)
 app.include_router(disks.router, prefix=API)
 app.include_router(docker.router, prefix=API)
+app.include_router(fans.router, prefix=API)
 app.include_router(alerts.router, prefix=API)
 
 # 静态前端：优先 backend/app/static，其次 web/dist

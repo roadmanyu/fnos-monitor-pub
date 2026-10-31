@@ -22,12 +22,33 @@ class AuthCfg(BaseModel):
 
 
 class CollectCfg(BaseModel):
-    interval_sec: int = 30
+    interval_sec: int = 2
     fs_interval_sec: int = 60
     retention_days: int = 7
     mock_on_failure: bool = True
     filesystem_mounts: list[str] = Field(default_factory=list)
     filesystem_exclude_prefixes: list[str] = Field(default_factory=list)
+    # 0 = 磁盘吞吐条按近期峰值归一；大于 0 时用该字节/秒作为满格
+    disk_bps_cap: float = 0
+
+
+class PowerCfg(BaseModel):
+    # 电源额定功率（瓦）。进度条 = 当前功耗 / 该值。0 表示只显示瓦数、不画百分比。
+    rated_watts: float = 200
+
+
+class FanPresetsCfg(BaseModel):
+    silent: int = 30
+    normal: int = 55
+    performance: int = 85
+
+
+class FansCfg(BaseModel):
+    # 默认允许写 hwmon PWM。没有可写节点时接口仍拒绝，界面保持只读。
+    control_enabled: bool = True
+    # 手动转速下限（百分比）。低于该值的请求直接 409，避免把风扇停转。
+    min_pwm_percent: int = 25
+    presets: FanPresetsCfg = Field(default_factory=FanPresetsCfg)
 
 
 class SmartCfg(BaseModel):
@@ -69,6 +90,8 @@ class AppConfig(BaseModel):
     collect: CollectCfg = Field(default_factory=CollectCfg)
     smart: SmartCfg = Field(default_factory=SmartCfg)
     docker: DockerCfg = Field(default_factory=DockerCfg)
+    power: PowerCfg = Field(default_factory=PowerCfg)
+    fans: FansCfg = Field(default_factory=FansCfg)
     alerts: AlertsCfg = Field(default_factory=AlertsCfg)
     display: DisplayCfg = Field(default_factory=DisplayCfg)
 

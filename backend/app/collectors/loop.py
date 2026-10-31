@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from app.alerts.rules import evaluate
 from app.collectors import disk as disk_col
 from app.collectors import docker_col
+from app.collectors import fans as fan_col
 from app.collectors import host as host_col
 from app.collectors import smart as smart_col
 from app.config import AppConfig
@@ -38,11 +40,13 @@ class CollectorLoop:
     async def _run(self) -> None:
         # 启动立即采一轮
         while True:
+            started = time.monotonic()
             try:
                 await asyncio.to_thread(self._collect_once)
             except Exception as e:
                 log.exception("collect loop error: %s", e)
-            await asyncio.sleep(self.cfg.collect.interval_sec)
+            elapsed = time.monotonic() - started
+            await asyncio.sleep(max(0.0, self.cfg.collect.interval_sec - elapsed))
 
     def _collect_once(self) -> None:
         import time
@@ -53,6 +57,10 @@ class CollectorLoop:
         self._tick += 1
 
         host = host_col.collect_host(mock_on_failure=mock)
+        fan_state = fan_col.collect_fans(
+            mock_on_failure=mock,
+            force_mock=bool(host.get("mock")),
+        )
         filesystems: list[dict] = []
         if self._tick == 1 or (self._tick * cfg.collect.interval_sec) % max(
             cfg.collect.fs_interval_sec, cfg.collect.interval_sec
@@ -87,6 +95,8 @@ class CollectorLoop:
                     "healthy": d.get("healthy"),
                     "temp_c": d.get("temp_c"),
                     "power_on_hours": d.get("power_on_hours"),
+                    "capacity_bytes": d.get("capacity_bytes"),
+                    "media": d.get("media"),
                     "skipped_standby": d.get("skipped_standby"),
                     "mock": d.get("mock", False),
                 }
@@ -111,6 +121,9 @@ class CollectorLoop:
                 ),
                 "total": len(containers),
             },
+            "fans": fan_state.get("fans") or [],
+            "control": fan_state.get("control") or "off",
+            "reason": fan_state.get("reason") or "",
         }
         # 附带完整 SMART 供 API
         snapshot["_smart_full"] = self._full_smart
@@ -122,6 +135,12 @@ class CollectorLoop:
         ]
         if host.get("temps_c", {}).get("cpu") is not None:
             points.append((ts, "temp.cpu", float(host["temps_c"]["cpu"]), None))
+        if host.get("swap_used_pct") is not None:
+            points.append((ts, "swap.used_pct", float(host["swap_used_pct"]), None))
+        if host.get("net_up_bps") is not None:
+            points.append((ts, "net.up_bps", float(host["net_up_bps"]), None))
+        if host.get("net_down_bps") is not None:
+            points.append((ts, "net.down_bps", float(host["net_down_bps"]), None))
         for fs in filesystems:
             points.append(
                 (

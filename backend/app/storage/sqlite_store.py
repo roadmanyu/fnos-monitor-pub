@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ def _utc_now() -> str:
 class Store:
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -50,6 +52,10 @@ class Store:
         self._conn.commit()
 
     def insert_points(self, points: list[tuple[str, str, float, dict | None]]) -> None:
+        with self._lock:
+            self._insert_points(points)
+
+    def _insert_points(self, points: list[tuple[str, str, float, dict | None]]) -> None:
         cur = self._conn.cursor()
         cur.executemany(
             "INSERT INTO metric_points(ts, metric, value, labels_json) VALUES (?,?,?,?)",
@@ -61,6 +67,12 @@ class Store:
         self._conn.commit()
 
     def history(
+        self, metric: str, from_ts: str, to_ts: str, step_sec: int = 60
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            return self._history(metric, from_ts, to_ts, step_sec)
+
+    def _history(
         self, metric: str, from_ts: str, to_ts: str, step_sec: int = 60
     ) -> list[dict[str, Any]]:
         cur = self._conn.cursor()
@@ -108,6 +120,18 @@ class Store:
         fingerprint: str,
         notified: bool,
     ) -> int:
+        with self._lock:
+            return self._insert_alert(rule_id, severity, title, message, fingerprint, notified)
+
+    def _insert_alert(
+        self,
+        rule_id: str,
+        severity: str,
+        title: str,
+        message: str,
+        fingerprint: str,
+        notified: bool,
+    ) -> int:
         ts = _utc_now()
         cur = self._conn.cursor()
         cur.execute(
@@ -121,6 +145,10 @@ class Store:
         return int(cur.lastrowid)
 
     def last_alert_ts(self, fingerprint: str) -> str | None:
+        with self._lock:
+            return self._last_alert_ts(fingerprint)
+
+    def _last_alert_ts(self, fingerprint: str) -> str | None:
         row = self._conn.execute(
             "SELECT ts FROM alert_events WHERE fingerprint = ? ORDER BY id DESC LIMIT 1",
             (fingerprint,),
@@ -128,6 +156,10 @@ class Store:
         return row["ts"] if row else None
 
     def list_alerts(self, limit: int = 50, severity: str | None = None) -> list[dict]:
+        with self._lock:
+            return self._list_alerts(limit, severity)
+
+    def _list_alerts(self, limit: int = 50, severity: str | None = None) -> list[dict]:
         if severity:
             rows = self._conn.execute(
                 """
@@ -155,13 +187,18 @@ class Store:
         ]
 
     def ack_alert(self, alert_id: int) -> bool:
-        cur = self._conn.execute(
+        with self._lock:
+            cur = self._conn.execute(
             "UPDATE alert_events SET acked = 1 WHERE id = ?", (alert_id,)
         )
         self._conn.commit()
         return cur.rowcount > 0
 
     def cleanup(self, retention_days: int, alert_days: int = 30) -> None:
+        with self._lock:
+            self._cleanup(retention_days, alert_days)
+
+    def _cleanup(self, retention_days: int, alert_days: int = 30) -> None:
         now = datetime.now(timezone.utc)
         metric_cut = (now - timedelta(days=retention_days)).replace(microsecond=0).isoformat().replace(
             "+00:00", "Z"

@@ -2,6 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { api } from '../api/client'
 
+defineProps({ embedded: { type: Boolean, default: false } })
+
 const data = ref({ filesystems: [], smart: [] })
 const detail = ref(null)
 const err = ref('')
@@ -26,8 +28,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <h2>磁盘</h2>
+  <div :class="embedded ? 'embed' : 'page'">
+    <h2 v-if="!embedded">磁盘</h2>
     <p v-if="err" style="color:var(--crit)">{{ err }}</p>
     <div class="card table-card">
       <h3>容量</h3>

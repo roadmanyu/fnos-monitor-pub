@@ -61,6 +61,8 @@ def _smart_one(dev: str, skip_standby: bool) -> dict[str, Any]:
                 "healthy": None,
                 "temp_c": None,
                 "power_on_hours": None,
+                "capacity_bytes": None,
+                "media": None,
                 "skipped_standby": True,
                 "attrs": [],
             }
@@ -119,6 +121,14 @@ def _smart_one(dev: str, skip_standby: bool) -> dict[str, Any]:
     if temp is None and "temperature" in nvme:
         temp = nvme.get("temperature")
 
+    capacity = None
+    cap = data.get("user_capacity") or {}
+    if isinstance(cap, dict) and cap.get("bytes"):
+        try:
+            capacity = int(cap["bytes"])
+        except (TypeError, ValueError):
+            capacity = None
+
     return {
         "id": disk_id,
         "device": dev,
@@ -126,9 +136,39 @@ def _smart_one(dev: str, skip_standby: bool) -> dict[str, Any]:
         "healthy": healthy if healthy is not None else True,
         "temp_c": temp,
         "power_on_hours": poh,
+        "capacity_bytes": capacity,
+        "media": _media_label(data),
         "skipped_standby": False,
         "attrs": attrs_out,
     }
+
+
+def _media_label(data: dict[str, Any]) -> str | None:
+    """由 protocol 与转速拼出 SATA HDD / SATA SSD / NVMe。读不到则省略。"""
+    device = data.get("device") or {}
+    protocol = str(device.get("protocol") or device.get("type") or "").strip().upper()
+    nvme = "nvme_smart_health_information_log" in data or "NVME" in protocol
+    rotation = data.get("rotation_rate")
+    if nvme:
+        return "NVMe"
+    if protocol in ("ATA", "SATA", "SAT"):
+        bus = "SATA"
+    elif protocol in ("SCSI", "SAS"):
+        bus = "SAS"
+    elif protocol:
+        bus = protocol
+    else:
+        bus = ""
+    if rotation is None and not bus:
+        return None
+    if rotation == 0:
+        kind = "SSD"
+    elif isinstance(rotation, (int, float)) and rotation > 0:
+        kind = "HDD"
+    else:
+        kind = ""
+    label = " ".join(part for part in (bus, kind) if part)
+    return label or None
 
 
 def _run_smartctl(args: list[str]) -> subprocess.CompletedProcess:
@@ -148,6 +188,8 @@ def _mock_disk() -> dict[str, Any]:
         "healthy": True,
         "temp_c": 34,
         "power_on_hours": 1000,
+        "capacity_bytes": 4000787030016,
+        "media": "SATA HDD",
         "skipped_standby": False,
         "attrs": [
             {"id": 5, "name": "Reallocated_Sector_Ct", "raw": "0", "worst": 100},
