@@ -31,7 +31,8 @@ const err = ref('')
 const now = ref(new Date())
 const tempsOpen = ref(false)
 const topMetric = ref('cpu')
-const seriesOn = reactive({ cpu: true, mem: true, load: false, temp: false })
+const seriesOn = reactive({ cpu: true, mem: true })
+const trendMode = ref('percent')
 let poll
 let pollDelay = 0
 let clock
@@ -250,7 +251,22 @@ const healthOk = computed(() => (
   healthReady.value && unackedCount.value === 0 && smartFail.value === 0 && dockerDown.value === 0
 ))
 
-const trend = computed(() => buildTrend(hist.value, seriesOn))
+const trend = computed(() => buildTrend(hist.value, seriesOn, trendMode.value))
+
+function selectTrend(key) {
+  if (key === 'load' || key === 'temp') {
+    trendMode.value = trendMode.value === key ? 'percent' : key
+    return
+  }
+  if (trendMode.value !== 'percent') trendMode.value = 'percent'
+  seriesOn[key] = !seriesOn[key]
+}
+
+const trendCaption = computed(() => {
+  if (trendMode.value === 'load') return '负载，按本段峰值'
+  if (trendMode.value === 'temp') return '温度 °C'
+  return ''
+})
 
 async function load() {
   try {
@@ -391,31 +407,33 @@ onUnmounted(() => {
   document.body.classList.remove('sheet-open')
 })
 
-const TREND_SERIES = [
-  { key: 'cpu', color: '#2ec9c0' },
-  { key: 'mem', color: '#f062b0' },
-  { key: 'load', color: '#f5b14a' },
-  { key: 'temp', color: '#f08a3a' }
-]
+const TREND_DRAW = {
+  cpu: { color: '#2ec9c0' },
+  mem: { color: '#f062b0' },
+  load: { color: '#f5b14a' },
+  temp: { color: '#f08a3a' }
+}
 
-function buildTrend(series, enabled) {
-  const w = 320
-  const h = 112
+function buildTrend(series, enabled, mode) {
+  const w = 640
+  const h = 240
+  const keys = mode === 'load' ? ['load'] : mode === 'temp' ? ['temp'] : ['cpu', 'mem'].filter((key) => enabled[key])
   const paths = []
-  for (const spec of TREND_SERIES) {
-    if (!enabled[spec.key]) continue
-    const values = (series[spec.key] || [])
+  for (const key of keys) {
+    const values = (series[key] || [])
       .map((p) => Number(p.value))
       .filter((v) => !Number.isNaN(v))
-    if (!values.length) continue
-    const d = linePath(values, w, h, trendDomain(spec.key, values))
-    if (d) paths.push({ key: spec.key, color: spec.color, d })
+    if (values.length < 2) continue
+    const domain = trendDomain(key, values)
+    const d = linePath(values, w, h, domain)
+    if (d) paths.push({ key, color: TREND_DRAW[key].color, d, domain })
   }
   const first = paths[0]
   return {
     has: paths.length > 0,
     paths,
-    area: first ? `${first.d} L ${w} ${h} L 0 ${h} Z` : '',
+    domain: first?.domain ?? 100,
+    area: mode === 'percent' && first ? `${first.d} L ${w} ${h} L 0 ${h} Z` : '',
     areaColor: first?.color || '#2ec9c0'
   }
 }
@@ -431,11 +449,7 @@ function linePath(values, w, h, domainMax) {
   const n = values.length
   const max = domainMax > 0 ? domainMax : 1
   const yOf = (v) => h - (Math.max(0, Math.min(max, v)) / max) * (h - 10) - 4
-  if (!n) return ''
-  if (n === 1) {
-    const y = yOf(values[0]).toFixed(1)
-    return `M0 ${y} L${w} ${y}`
-  }
+  if (!n || n < 2) return ''
   return values
     .map((v, i) => {
       const x = (i / (n - 1)) * w
@@ -559,15 +573,21 @@ function linePath(values, w, h, domainMax) {
         </div>
       </section>
 
-      <section class="card mod span-3">
+      <section class="card mod span-12 trend-card">
         <header class="mod-head">
           <span class="mid">M03</span>
           <span class="mod-title">趋势</span>
           <span class="pill muted head-pill push">近 1 小时</span>
         </header>
-        <div v-if="trend.has" class="trend-wrap">
-          <svg viewBox="0 0 320 112" class="trend" preserveAspectRatio="none">
-            <line v-for="i in 3" :key="i" x1="0" :y1="i * 28" x2="320" :y2="i * 28" stroke="#eef1f4" />
+        <div v-if="trend.has" class="trend-plot">
+          <div v-if="trendMode === 'percent'" class="y-axis" aria-hidden="true">
+            <span>100</span>
+            <span>0</span>
+          </div>
+          <svg viewBox="0 0 640 240" class="trend" preserveAspectRatio="none">
+            <line x1="0" y1="8" x2="640" y2="8" stroke="#eef1f4" />
+            <line x1="0" y1="120" x2="640" y2="120" stroke="#eef1f4" />
+            <line x1="0" y1="232" x2="640" y2="232" stroke="#eef1f4" />
             <path v-if="trend.area" :d="trend.area" :fill="trend.areaColor" fill-opacity="0.16" stroke="none" />
             <path
               v-for="p in trend.paths"
@@ -575,30 +595,36 @@ function linePath(values, w, h, domainMax) {
               :d="p.d"
               fill="none"
               :stroke="p.color"
-              stroke-width="2.2"
+              stroke-width="6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
               vector-effect="non-scaling-stroke"
             />
           </svg>
         </div>
-        <div v-else class="empty">暂无趋势数据</div>
+        <div v-else class="trend-empty">暂无趋势</div>
+        <div class="x-axis">
+          <span>1 小时前</span>
+          <span>现在</span>
+        </div>
+        <p v-if="trendCaption" class="trend-caption">{{ trendCaption }}</p>
         <div class="legend">
-          <button type="button" class="chip" :class="{ on: seriesOn.cpu }" @click="seriesOn.cpu = !seriesOn.cpu">
+          <button type="button" class="chip" :class="{ on: trendMode === 'percent' && seriesOn.cpu }" @click="selectTrend('cpu')">
             <i class="swatch cpu"></i>CPU {{ formatPct(host.cpu_pct) }}%
           </button>
-          <button type="button" class="chip" :class="{ on: seriesOn.mem }" @click="seriesOn.mem = !seriesOn.mem">
+          <button type="button" class="chip" :class="{ on: trendMode === 'percent' && seriesOn.mem }" @click="selectTrend('mem')">
             <i class="swatch mem"></i>内存 {{ formatPct(host.mem_used_pct) }}%
           </button>
-          <button type="button" class="chip" :class="{ on: seriesOn.load }" @click="seriesOn.load = !seriesOn.load">
+          <button type="button" class="chip" :class="{ on: trendMode === 'load' }" @click="selectTrend('load')">
             <i class="swatch load"></i>负载 {{ host.load1 ?? '—' }}
           </button>
-          <button type="button" class="chip" :class="{ on: seriesOn.temp }" @click="seriesOn.temp = !seriesOn.temp">
+          <button type="button" class="chip" :class="{ on: trendMode === 'temp' }" @click="selectTrend('temp')">
             <i class="swatch temp"></i>温度 {{ cpuTemp != null ? cpuTemp + '°C' : '—' }}
           </button>
         </div>
-        <p v-if="seriesOn.load || seriesOn.temp" class="scale-note">负载、温度按各自刻度绘制，不与百分比共用一轴。</p>
       </section>
 
-      <section class="card mod span-3">
+      <section class="card mod span-3 net-card">
         <header class="mod-head">
           <span class="mid">M04</span>
           <span class="mod-title">网络</span>
@@ -620,7 +646,7 @@ function linePath(values, w, h, domainMax) {
         <div v-else class="empty grow">{{ netKnown ? '采集中' : '暂无数据' }}</div>
       </section>
 
-      <section class="card mod span-4">
+      <section class="card mod span-4 cpu-card">
         <header class="mod-head">
           <span class="mid">M05</span>
           <span class="mod-title">CPU</span>
@@ -676,7 +702,7 @@ function linePath(values, w, h, domainMax) {
         </div>
       </section>
 
-      <section class="card mod span-8">
+      <section class="card mod span-8 health-card">
         <header class="mod-head">
           <span class="mid">M10</span>
           <span class="mod-title">健康</span>
@@ -700,7 +726,7 @@ function linePath(values, w, h, domainMax) {
         </div>
       </section>
 
-      <section class="card mod span-7">
+      <section class="card mod span-7 docker-card">
         <header class="mod-head">
           <span class="mid">M07</span>
           <span class="mod-title">Docker</span>
@@ -748,7 +774,7 @@ function linePath(values, w, h, domainMax) {
         <div v-else class="empty">暂无数据</div>
       </section>
 
-      <section class="card mod span-5">
+      <section class="card mod span-5 pool-card">
         <header class="mod-head">
           <span class="mid">M08</span>
           <span class="mod-title">存储池</span>
@@ -769,7 +795,7 @@ function linePath(values, w, h, domainMax) {
         <div v-else class="empty">暂无挂载数据</div>
       </section>
 
-      <section class="card mod span-12">
+      <section class="card mod span-12 disk-card">
         <header class="mod-head">
           <span class="mid">M09</span>
           <span class="mod-title">硬盘</span>
@@ -1078,8 +1104,42 @@ function linePath(values, w, h, domainMax) {
   color: var(--muted);
 }
 
-.trend-wrap { flex: 1; min-height: 120px; }
-.trend { width: 100%; height: 128px; display: block; }
+.trend-plot { display: flex; gap: 8px; align-items: stretch; }
+.y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #8b95a5;
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 0;
+}
+.trend-wrap, .trend-plot { flex: 1; min-height: 200px; }
+.trend { width: 100%; height: 200px; display: block; }
+.trend-empty {
+  min-height: 200px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: #f7f8fb;
+  color: #5c6775;
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+.x-axis {
+  display: flex;
+  justify-content: space-between;
+  color: #6d7886;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.trend-caption {
+  margin: 0;
+  color: #3d4754;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -1108,8 +1168,13 @@ function linePath(values, w, h, domainMax) {
   align-items: center;
   gap: 6px;
 }
+.trend-card .chip {
+  min-height: 44px;
+  padding: 8px 16px;
+  font-size: 1.05rem;
+}
 .chip.on { background: #e7f6f4; color: var(--teal-ink); }
-.scale-note { margin: 0; color: #9aa3b2; font-size: 0.72rem; }
+.trend-card .swatch { width: 22px; height: 6px; }
 .age.stale {
   color: #b45309;
   background: var(--warn-bg);
@@ -1373,37 +1438,56 @@ function linePath(values, w, h, domainMax) {
 .empty-inline { margin: 0; }
 
 @media (min-width: 1200px) {
-  .modules { gap: 14px; }
-  .id-card { padding: 20px 28px 16px; }
-  .id-card .mod-title { font-size: 1.2rem; }
-  .id-card .pill { font-size: 1.2rem; padding: 8px 18px; }
-  .id-name { font-size: clamp(3.4rem, 4.8vw, 5.4rem); }
-  .id-fresh { font-size: 1.65rem; font-weight: 650; }
-  .id-host { font-size: 1.25rem; }
-  .id-clock { margin-top: 18px; padding-top: 16px; font-size: 1.35rem; }
-  .id-time { font-size: clamp(2.6rem, 3.4vw, 3.8rem); }
-  .id-card .facts { gap: 0; margin-top: 6px; }
-  .id-card .fact {
-    padding: 14px 0;
-    border-bottom: 1px solid var(--line);
+  .modules {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    gap: 10px;
+    grid-template-rows: minmax(0, 1.2fr) minmax(0, 1.02fr) minmax(0, 0.72fr) 40px;
   }
-  .id-card .fact:last-child { border-bottom: 0; }
-  .id-card .fact span { font-size: 1.2rem; font-weight: 700; }
-  .id-card .fact b { font-size: clamp(1.55rem, 2vw, 2.15rem); font-weight: 700; }
-  .id-ver { font-size: 1rem; margin-top: 4px; }
-  .res-card { gap: 16px; }
-  .res-card .metric { gap: 10px; }
-  .res-card .seg { height: 18px; }
-  .res-card .metric-top { font-size: 1rem; }
-  .res-card .metric-top b { font-size: 1.85rem; }
-  .metric-top b { font-size: 1.7rem; }
-  .health-cell b, .sum b { font-size: 2.15rem; }
+  .id-card { grid-column: 1 / span 3; grid-row: 1; }
+  .res-card { grid-column: 4 / span 3; grid-row: 1; }
+  .trend-card { grid-column: 7 / span 3; grid-row: 1; }
+  .net-card { grid-column: 10 / span 3; grid-row: 1; }
+  .cpu-card { grid-column: 1 / span 4; grid-row: 2; }
+  .health-card { grid-column: 5 / span 3; grid-row: 2; }
+  .docker-card { grid-column: 8 / span 5; grid-row: 2; }
+  .pool-card { grid-column: 1 / span 7; grid-row: 3; }
+  .disk-card { grid-column: 8 / span 5; grid-row: 3; }
+  .alerts { grid-column: 1 / -1; grid-row: 4; padding: 6px 14px; gap: 4px; }
+  .alerts .alert-list { display: flex; gap: 16px; overflow: hidden; flex-wrap: nowrap; }
+  .mod { min-height: 0; height: 100%; overflow: hidden; padding: 10px 12px; gap: 6px; }
+  .id-name { font-size: 1.35rem; }
+  .id-fresh { font-size: 0.8rem; }
+  .id-clock { margin-top: 2px; padding-top: 2px; }
+  .id-time { font-size: 1.05rem; }
+  .id-card .facts { gap: 0; }
+  .id-card .fact { padding: 0; }
+  .id-card .fact span { font-size: 0.72rem; }
+  .id-card .fact b { font-size: 0.82rem; }
+  .id-ver { display: none; }
+  .id-card .pill { font-size: 0.8rem; padding: 2px 8px; }
+  .res-card { gap: 4px; }
+  .res-card .metric { gap: 2px; }
+  .res-card .seg { height: 7px; }
+  .res-card .metric-top, .res-card .metric-top b, .metric-top b { font-size: 0.92rem; }
+  .trend-plot { flex: 1; min-height: 0; }
+  .trend-card .trend, .trend-card .trend-empty { height: 100%; min-height: 0; flex: 1; }
+  .trend-empty { font-size: 1.25rem; }
+  .trend-card .legend { flex-wrap: nowrap; gap: 4px; }
+  .trend-card .chip { min-height: 26px; font-size: 0.68rem; padding: 2px 6px; }
+  .trend-card .y-axis, .trend-card .x-axis, .trend-card .trend-caption { font-size: 0.72rem; }
+  .net-card { justify-content: space-between; }
+  .net-svg { flex: 1; min-height: 0; height: auto; }
+  .donut-wrap, .donut { width: 88px; height: 88px; }
+  .ctr-list { flex: 1; min-height: 0; max-height: none; }
+  .health-cell { padding: 6px 8px; }
+  .health-cell b, .sum b { font-size: 1.25rem; }
 }
 
 @media (min-width: 1200px) and (max-height: 860px) {
   .modules { gap: 10px; }
   .mod { gap: 8px; }
-  .trend { height: 112px; }
   .net-svg { height: 72px; }
   .empty.grow { min-height: 88px; }
   .id-card .fact { padding: 10px 0; }
@@ -1425,7 +1509,8 @@ function linePath(values, w, h, domainMax) {
   .id-card .fact b { font-size: 1.05rem; }
   .id-card .fact span { font-size: 0.85rem; }
   .clock { font-size: 2.7rem; }
-  .trend { height: 180px; }
+  .trend, .trend-empty { height: 200px; min-height: 200px; }
+  .trend-card .chip { min-height: 44px; font-size: 1rem; }
   .net-svg { height: 128px; }
   .net-v { font-size: 1.35rem; }
   .health-cell b, .sum b { font-size: 1.45rem; }

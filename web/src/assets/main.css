@@ -79,11 +79,29 @@ code {
 .page.dash { max-width: 1360px; }
 
 @media (min-width: 1200px) {
+  html, body { overflow: hidden; height: 100%; }
   .page.dash {
     max-width: none;
     width: 100%;
-    min-height: calc(100vh - 58px);
-    padding: 10px 16px 18px;
+    height: calc(100vh - 56px);
+    max-height: calc(100vh - 56px);
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 12px 8px;
+  }
+  .page.dash > .drawer { display: none; }
+  .page.dash > .drawer[open] {
+    display: block;
+    position: fixed;
+    z-index: 50;
+    left: 10%;
+    right: 10%;
+    top: 10%;
+    bottom: 10%;
+    margin: 0;
+    overflow: auto;
   }
 }
 
