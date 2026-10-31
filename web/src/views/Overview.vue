@@ -161,6 +161,13 @@ function usageTone(pct) {
   return ''
 }
 
+function ctrMemPct(c) {
+  const used = Number(c?.mem_usage_bytes)
+  const limit = Number(c?.mem_limit_bytes)
+  if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return 0
+  return clampPct((used / limit) * 100)
+}
+
 const coreCount = computed(() => {
   const n = host.value?.cpu_cores?.length
   return n > 0 ? n : 1
@@ -980,8 +987,14 @@ function linePath(values, w, h, domainMax) {
               >
                 <i class="ctr-dot" :class="ctrDot(c.state)"></i>
                 <span class="name">{{ c.name }}</span>
-                <span class="stat">{{ c.cpu_pct != null ? formatPct(c.cpu_pct) + '%' : '—' }}</span>
-                <span class="stat">{{ formatMemShort(c.mem_usage_bytes) }}</span>
+                <span class="stat meter">
+                  <b>{{ c.cpu_pct != null ? formatPct(c.cpu_pct) + '%' : '—' }}</b>
+                  <i class="seg sm cpu" :class="c.cpu_pct == null ? '' : usageTone(c.cpu_pct)" :style="{ '--p': (c.cpu_pct == null ? 0 : clampPct(c.cpu_pct)) + '%' }"></i>
+                </span>
+                <span class="stat meter">
+                  <b>{{ formatMemShort(c.mem_usage_bytes) }}</b>
+                  <i class="seg sm mem" :class="c.mem_usage_bytes == null ? '' : usageTone(ctrMemPct(c))" :style="{ '--p': ctrMemPct(c) + '%' }"></i>
+                </span>
               </div>
             </div>
             <div v-else class="docker-empty">暂无容器</div>
@@ -1746,7 +1759,7 @@ function linePath(values, w, h, domainMax) {
 }
 .ctr {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) 64px 52px;
+  grid-template-columns: 12px minmax(0, 1fr) 84px 84px;
   gap: 8px;
   align-items: center;
   padding: 2px 2px;
@@ -1772,6 +1785,18 @@ function linePath(values, w, h, domainMax) {
 .ctr-dot.run { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16); }
 .ctr-dot.stop { background: #fb7185; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat.meter {
+  display: grid;
+  gap: 3px;
+  justify-items: stretch;
+}
+.stat.meter b {
+  text-align: right;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.docker-card .seg.sm { height: 8px; }
 .stat {
   text-align: right;
   font-variant-numeric: tabular-nums;
