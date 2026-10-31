@@ -75,11 +75,24 @@ const netTrend = computed(() => {
   const up = (hist.value.up || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
   const down = (hist.value.down || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
   const peak = Math.max(1, ...up, ...down)
-  return {
-    has: up.length + down.length > 0,
-    up: linePath(up, 320, 72, peak),
-    down: linePath(down, 320, 72, peak)
-  }
+  const upPath = up.length >= 2 ? linePath(up, 320, 80, peak) : ''
+  const downPath = down.length >= 2 ? linePath(down, 320, 80, peak) : ''
+  return { has: !!(upPath || downPath), up: upPath, down: downPath }
+})
+
+const netPace = computed(() => {
+  if (!netKnown.value) return null
+  const up = host.value?.net_up_bps
+  const down = host.value?.net_down_bps
+  if (up == null && down == null) return null
+  const sum = (Number(up) || 0) + (Number(down) || 0)
+  return sum >= 2048 ? '传输中' : '空闲'
+})
+
+const netChartText = computed(() => {
+  if (!netKnown.value) return '暂无网速'
+  if (!netTrend.value.has) return '采集中'
+  return ''
 })
 
 const clockText = computed(() => formatClock(now.value, tz.value))
@@ -384,7 +397,7 @@ function armPoll() {
 }
 
 function rateLabel(value, known) {
-  if (!known) return '暂无数据'
+  if (!known) return '—'
   return formatRate(value) || '采集中'
 }
 
@@ -628,22 +641,31 @@ function linePath(values, w, h, domainMax) {
         <header class="mod-head">
           <span class="mid">M04</span>
           <span class="mod-title">网络</span>
+          <span v-if="netPace" class="pill head-pill push" :class="netPace === '传输中' ? 'ok' : 'muted'">
+            <i class="dot"></i>{{ netPace }}
+          </span>
         </header>
         <div class="net-stats">
           <div>
-            <div class="k">↑ 上传</div>
+            <div class="k"><i class="swatch up"></i>上传</div>
             <div class="net-v">{{ rateLabel(host.net_up_bps, netKnown) }}</div>
           </div>
           <div>
-            <div class="k">↓ 下载</div>
+            <div class="k"><i class="swatch down"></i>下载</div>
             <div class="net-v">{{ rateLabel(host.net_down_bps, netKnown) }}</div>
           </div>
         </div>
-        <svg v-if="netTrend.has" viewBox="0 0 320 72" class="net-svg" preserveAspectRatio="none">
-          <path :d="netTrend.down" fill="none" stroke="#8b7cf6" stroke-width="2" vector-effect="non-scaling-stroke" />
-          <path :d="netTrend.up" fill="none" stroke="#5b8def" stroke-width="2" vector-effect="non-scaling-stroke" />
-        </svg>
-        <div v-else class="empty grow">{{ netKnown ? '采集中' : '暂无数据' }}</div>
+        <div class="net-plot">
+          <svg v-if="netTrend.has" viewBox="0 0 320 80" class="net-svg" preserveAspectRatio="none">
+            <path :d="netTrend.down" fill="none" stroke="#8b7cf6" stroke-width="4" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+            <path :d="netTrend.up" fill="none" stroke="#5b8def" stroke-width="4" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+          </svg>
+          <div v-else class="net-empty">{{ netChartText }}</div>
+          <div class="x-axis net-axis">
+            <span>更早</span>
+            <span>现在</span>
+          </div>
+        </div>
       </section>
 
       <section class="card mod span-4 cpu-card">
@@ -1154,6 +1176,8 @@ function linePath(values, w, h, domainMax) {
 .swatch.mem { background: #f062b0; }
 .swatch.load { background: #f5b14a; }
 .swatch.temp { background: #f08a3a; }
+.swatch.up { background: #5b8def; }
+.swatch.down { background: #8b7cf6; }
 .chip {
   border: 0;
   background: #f4f6f8;
@@ -1182,16 +1206,37 @@ function linePath(values, w, h, domainMax) {
   padding: 2px 8px;
 }
 
-.net-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.net-svg { width: 100%; height: 72px; display: block; margin-top: 6px; }
+.net-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: end; }
+.net-plot { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.net-svg { width: 100%; flex: 1; min-height: 56px; height: auto; display: block; }
+.net-card .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.net-card .k { font-size: 0.92rem; color: #607086; }
+.net-empty {
+  flex: 1;
+  min-height: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: #f7f8fb;
+  color: #5c6775;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.net-axis { font-size: 0.8rem; }
 .net-v {
-  margin-top: 2px;
-  font-size: 1.2rem;
-  font-weight: 650;
+  margin-top: 6px;
+  font-size: 1.7rem;
+  font-weight: 700;
   letter-spacing: -0.03em;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+  line-height: 1.1;
 }
+.net-card .k { display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0.04em; }
 .empty {
   flex: 1;
   display: grid;
@@ -1456,29 +1501,47 @@ function linePath(values, w, h, domainMax) {
   .disk-card { grid-column: 8 / span 5; grid-row: 3; }
   .alerts { grid-column: 1 / -1; grid-row: 4; padding: 6px 14px; gap: 4px; }
   .alerts .alert-list { display: flex; gap: 16px; overflow: hidden; flex-wrap: nowrap; }
-  .mod { min-height: 0; height: 100%; overflow: hidden; padding: 10px 12px; gap: 6px; }
-  .id-name { font-size: 1.35rem; }
-  .id-fresh { font-size: 0.8rem; }
-  .id-clock { margin-top: 2px; padding-top: 2px; }
-  .id-time { font-size: 1.05rem; }
-  .id-card .facts { gap: 0; }
-  .id-card .fact { padding: 0; }
-  .id-card .fact span { font-size: 0.72rem; }
-  .id-card .fact b { font-size: 0.82rem; }
+  .mod { min-height: 0; height: 100%; overflow: hidden; padding: 12px 14px; gap: 8px; }
+  .alerts.mod {
+    flex-direction: row;
+    align-items: center;
+    padding: 0 14px;
+    gap: 12px;
+  }
+  .alerts .mod-head { flex: none; min-height: 0; flex-wrap: nowrap; }
+  .alerts .alert-list { flex: 1; min-width: 0; align-items: center; }
+  .alerts .alert-row { flex: none; flex-wrap: nowrap; white-space: nowrap; }
+  .alerts .alert-title { white-space: nowrap; }
+  .alerts .alert-row .muted {
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .id-name { font-size: 1.45rem; }
+  .id-fresh { font-size: 0.85rem; }
+  .id-clock { margin-top: 4px; padding-top: 4px; font-size: 0.8rem; }
+  .id-time { font-size: 1.15rem; }
+  .id-body { flex: 1; min-height: 0; align-content: space-evenly; gap: 6px; }
+  .id-card .facts { gap: 0; align-content: space-evenly; }
+  .id-card .fact { padding: 1px 0; border-bottom: 0; }
+  .id-card .fact span { font-size: 0.78rem; }
+  .id-card .fact b { font-size: 0.92rem; }
   .id-ver { display: none; }
-  .id-card .pill { font-size: 0.8rem; padding: 2px 8px; }
-  .res-card { gap: 4px; }
-  .res-card .metric { gap: 2px; }
-  .res-card .seg { height: 7px; }
-  .res-card .metric-top, .res-card .metric-top b, .metric-top b { font-size: 0.92rem; }
+  .res-card { gap: 0; justify-content: space-evenly; }
+  .res-card .metric { gap: 6px; }
+  .res-card .seg { height: 9px; }
+  .res-card .metric-top, .res-card .metric-top b { font-size: 0.98rem; }
+  .trend-card { justify-content: space-evenly; }
+  .net-card { justify-content: space-evenly; gap: 10px; }
+  .net-card .k { font-size: 0.95rem; }
+  .net-v { font-size: 1.65rem; }
   .trend-plot { flex: 1; min-height: 0; }
   .trend-card .trend, .trend-card .trend-empty { height: 100%; min-height: 0; flex: 1; }
   .trend-empty { font-size: 1.25rem; }
   .trend-card .legend { flex-wrap: nowrap; gap: 4px; }
   .trend-card .chip { min-height: 26px; font-size: 0.68rem; padding: 2px 6px; }
-  .trend-card .y-axis, .trend-card .x-axis, .trend-card .trend-caption { font-size: 0.72rem; }
-  .net-card { justify-content: space-between; }
-  .net-svg { flex: 1; min-height: 0; height: auto; }
+  .trend-card .y-axis, .trend-card .x-axis, .trend-card .trend-caption { font-size: 0.75rem; }
   .donut-wrap, .donut { width: 88px; height: 88px; }
   .ctr-list { flex: 1; min-height: 0; max-height: none; }
   .health-cell { padding: 6px 8px; }
@@ -1488,9 +1551,7 @@ function linePath(values, w, h, domainMax) {
 @media (min-width: 1200px) and (max-height: 860px) {
   .modules { gap: 10px; }
   .mod { gap: 8px; }
-  .net-svg { height: 72px; }
-  .empty.grow { min-height: 88px; }
-  .id-card .fact { padding: 10px 0; }
+  .empty.grow { min-height: 0; }
 }
 
 @media (max-width: 1199px) {
@@ -1511,8 +1572,10 @@ function linePath(values, w, h, domainMax) {
   .clock { font-size: 2.7rem; }
   .trend, .trend-empty { height: 200px; min-height: 200px; }
   .trend-card .chip { min-height: 44px; font-size: 1rem; }
-  .net-svg { height: 128px; }
-  .net-v { font-size: 1.35rem; }
+  .net-svg { height: 140px; min-height: 140px; }
+  .net-v { font-size: 1.85rem; }
+  .net-card .k { font-size: 1.05rem; }
+  .net-empty { min-height: 120px; font-size: 1.45rem; }
   .health-cell b, .sum b { font-size: 1.45rem; }
   .donut-wrap, .donut { width: 148px; height: 148px; }
   .ctr-list { max-height: none; }
