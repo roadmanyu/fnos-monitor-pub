@@ -10,9 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.v1 import alerts, auth, disks, docker, fans, meta, metrics
+from app.api.v1 import alerts, auth, calibration, disks, docker, fans, meta, metrics, tuning
 from app.collectors.loop import CollectorLoop
 from app.config import data_dir, load_config
+from app.tuning import apply_stored_tuning, capture_baseline
 from app.storage.sqlite_store import Store
 from app.version import app_version as _app_version
 
@@ -33,6 +34,8 @@ async def lifespan(app: FastAPI):
     cfg = load_config()
     db_path = data_dir() / "monitor.db"
     store = Store(db_path)
+    capture_baseline(cfg, force=True)
+    apply_stored_tuning(cfg, store)
     collector = CollectorLoop(cfg, store)
     collector.start()
     log.info("fnos-monitor started; db=%s", db_path)
@@ -58,6 +61,8 @@ app.include_router(disks.router, prefix=API)
 app.include_router(docker.router, prefix=API)
 app.include_router(fans.router, prefix=API)
 app.include_router(alerts.router, prefix=API)
+app.include_router(calibration.router, prefix=API)
+app.include_router(tuning.router, prefix=API)
 
 # 静态前端：优先 backend/app/static，其次 web/dist
 _static_candidates = [

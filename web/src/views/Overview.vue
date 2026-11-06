@@ -6,6 +6,20 @@ import { activeProfile, markReach, nas, rememberLocalName } from '../nas/profile
 import Alerts from './Alerts.vue'
 import Disks from './Disks.vue'
 import Docker from './Docker.vue'
+import { formatCapacity } from '../utils/capacity'
+import { shouldRefresh } from '../utils/refreshGate'
+import {
+  Activity,
+  Bell,
+  Container,
+  Cpu,
+  Database,
+  Fan,
+  Gauge,
+  HardDrive,
+  Monitor,
+  Network
+} from 'lucide-vue-next'
 import {
   clampPct,
   formatBytes,
@@ -14,9 +28,9 @@ import {
   formatMemShort,
   formatPct,
   formatRate,
-  formatTs,
   formatUptime
 } from '../utils/format'
+import { TREND_WINDOW_MS, areaUnder, linePathTimed, mergeHist } from '../utils/trendWindow'
 
 const snap = ref(null)
 const meta = ref(null)
@@ -39,12 +53,54 @@ let clock
 
 const tz = computed(() => meta.value?.timezone_display || 'Asia/Shanghai')
 const host = computed(() => snap.value?.host || {})
+const heldFs = ref(null)
+const heldSmart = ref(null)
+let fsAt = null
+let smartAt = null
+
+function positiveSec(value, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+const overviewSec = computed(() => positiveSec(meta.value?.refresh?.overview_sec, 1))
+const diskRefreshSec = computed(() => positiveSec(meta.value?.refresh?.disk_sec, 60))
+const smartRefreshSec = computed(() => positiveSec(meta.value?.refresh?.smart_sec, 60))
+
+function holdSlow(snapshot, force = false) {
+  const nowMs = Date.now()
+  const incomingFs = snapshot?.filesystems || []
+  const incomingSmart = snapshot?.disks_smart_summary || []
+  const fsEmpty = !heldFs.value || heldFs.value.length === 0
+  const smartEmpty = !heldSmart.value || heldSmart.value.length === 0
+  if (
+    shouldRefresh(fsAt, nowMs, diskRefreshSec.value * 1000, force || heldFs.value == null)
+    || (fsEmpty && incomingFs.length)
+  ) {
+    heldFs.value = incomingFs
+    fsAt = nowMs
+  }
+  if (
+    shouldRefresh(smartAt, nowMs, smartRefreshSec.value * 1000, force || heldSmart.value == null)
+    || (smartEmpty && incomingSmart.length)
+  ) {
+    heldSmart.value = incomingSmart
+    smartAt = nowMs
+  }
+}
+
 const filesystems = computed(() => {
-  return [...(snap.value?.filesystems || [])].sort(
+  const raw = heldFs.value ?? snap.value?.filesystems ?? []
+  return [...raw].sort(
     (a, b) => (Number(b.used_pct) || 0) - (Number(a.used_pct) || 0)
   )
 })
-const disks = computed(() => snap.value?.disks_smart_summary || [])
+const disks = computed(() => (heldSmart.value ?? snap.value?.disks_smart_summary ?? []).filter((d) => d.visible !== false))
+const capacityDisplay = computed(() => meta.value?.capacity_display || { unit: 'gib', decimals: 1 })
+
+function capacityText(bytes, labelBytes) {
+  return formatCapacity(bytes, capacityDisplay.value, labelBytes)
+}
 const cpuTemp = computed(() => host.value?.temps_c?.cpu ?? null)
 const cores = computed(() => {
   const raw = host.value?.cpu_cores
@@ -72,7 +128,7 @@ const heroHost = computed(() => {
   return ''
 })
 const hostStatus = computed(() => {
-  if (!snap.value?.ts) return { text: '离线', cls: 'muted' }
+  if (!snap.value?.ts) return { text: '离线', cls: 'crit' }
   if (meta.value?.mock_mode) return { text: '模拟数据', cls: 'warn' }
   if (collectStale.value) return { text: '采集延迟', cls: 'warn' }
   return { text: '在线', cls: 'ok' }
@@ -88,11 +144,12 @@ const diskIoText = computed(() => {
   return `读 ${read || '—'} · 写 ${write || '—'}`
 })
 const netTrend = computed(() => {
-  const up = (hist.value.up || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
-  const down = (hist.value.down || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
-  const peak = Math.max(1, ...up, ...down)
-  const upPath = up.length >= 2 ? linePath(up, 320, 80, peak) : ''
-  const downPath = down.length >= 2 ? linePath(down, 320, 80, peak) : ''
+  const nowMs = now.value.getTime()
+  const upVals = (hist.value.up || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
+  const downVals = (hist.value.down || []).map((p) => Number(p.value)).filter((v) => !Number.isNaN(v))
+  const peak = Math.max(1, ...upVals, ...downVals)
+  const upPath = linePathTimed(hist.value.up, 320, 80, peak, nowMs)
+  const downPath = linePathTimed(hist.value.down, 320, 80, peak, nowMs)
   return { has: !!(upPath || downPath), up: upPath, down: downPath }
 })
 
@@ -104,6 +161,14 @@ const netPace = computed(() => {
   const sum = (Number(up) || 0) + (Number(down) || 0)
   return sum >= 2048 ? '传输中' : '空闲'
 })
+
+const netIface = computed(() => {
+  const name = host.value?.net_iface
+  if (!name) return ''
+  return name.length > 12 ? `${name.slice(0, 11)}…` : name
+})
+
+const netSpeed = computed(() => host.value?.net_speed || '')
 
 const netChartText = computed(() => {
   if (!netKnown.value) return '暂无网速'
@@ -236,7 +301,7 @@ const topContainers = computed(() => {
     }
     return (Number(b.cpu_pct) || -1) - (Number(a.cpu_pct) || -1)
   })
-  return ranked.slice(0, 16).map((c, i) => ({
+  return ranked.slice(0, 8).map((c, i) => ({
     ...c,
     rank: i + 1,
     hot: Number(c.cpu_pct) >= 50
@@ -246,9 +311,9 @@ const topContainers = computed(() => {
 const dockerCols = computed(() => {
   const items = topContainers.value
   if (!items.length) return []
-  const leftCount = Math.min(8, Math.ceil(items.length / 2))
+  const leftCount = Math.ceil(items.length / 2)
   const left = items.slice(0, leftCount)
-  const right = items.slice(leftCount, 16)
+  const right = items.slice(leftCount)
   return right.length ? [left, right] : [left]
 })
 
@@ -294,7 +359,7 @@ const ageSec = computed(() => {
 
 const intervalSec = computed(() => {
   const n = Number(meta.value?.collect_interval_sec)
-  return Number.isFinite(n) && n > 0 ? n : 2
+  return Number.isFinite(n) && n > 0 ? n : 1
 })
 
 const collectStale = computed(() => {
@@ -302,53 +367,110 @@ const collectStale = computed(() => {
   return ageSec.value > intervalSec.value * 2
 })
 
-const cadenceText = computed(() => `每 ${intervalSec.value} 秒`)
+const cadenceText = computed(() => `每 ${overviewSec.value} 秒`)
+
+const DISK_PAGE_SIZE = 6
+const diskPage = ref(0)
+const diskPageCount = computed(() => Math.max(1, Math.ceil(disks.value.length / DISK_PAGE_SIZE)))
+const diskPageItems = computed(() => {
+  const start = diskPage.value * DISK_PAGE_SIZE
+  return disks.value.slice(start, start + DISK_PAGE_SIZE)
+})
+watch(diskPageCount, (count) => {
+  if (diskPage.value > count - 1) diskPage.value = 0
+})
 
 const healthReady = computed(() => !!snap.value?.ts)
 
-const pwmDraft = ref(55)
-const pwmHold = ref(false)
+const pwmDrafts = reactive({})
+const pwmHoldId = ref('')
 const fanBusy = ref(false)
 const fanMsg = ref('')
 const fanItems = computed(() => (Array.isArray(snap.value?.fans) ? snap.value.fans : []))
 const fanControl = computed(() => snap.value?.control || 'off')
+const minPwm = computed(() => {
+  const n = Number(meta.value?.fan_min_pwm_percent)
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.round(n)) : 25
+})
 const fanWritable = computed(() => fanControl.value === 'ready' && fanItems.value.some((f) => f.controllable))
-const fanSlots = computed(() => {
-  if (fanItems.value.length) return fanItems.value
-  return [
-    { id: 'placeholder-cpu', label: 'CPU', rpm: null, mode: 'unknown', pwm_percent: null },
-    { id: 'placeholder-case', label: '机箱', rpm: null, mode: 'unknown', pwm_percent: null }
-  ]
+const fanMixed = computed(() => {
+  const items = fanItems.value
+  if (!items.length) return false
+  const n = items.filter((f) => f.controllable).length
+  return n > 0 && n < items.length
 })
-const fanCols = computed(() => {
-  const n = fanSlots.value.length
-  if (n <= 1) return 1
-  if (!deskLayout.value) return Math.min(2, n)
-  if (n <= 2) return n
-  return n <= 4 ? 2 : 3
+
+function fanRole(fan) {
+  if (fan?.role === 'cpu' || fan?.role === 'chassis' || fan?.role === 'other') return fan.role
+  if (fan?.label === 'CPU') return 'cpu'
+  if (fan?.label === '机箱') return 'chassis'
+  return 'other'
+}
+
+const fanRows = computed(() => {
+  const rows = fanItems.value.map((fan) => ({ ...fan, role: fanRole(fan), missing: false }))
+  const classified = rows.some((fan) => fan.role === 'cpu' || fan.role === 'chassis')
+  const ensure = (role, label) => {
+    if (rows.some((fan) => fan.role === role)) return
+    rows.push({
+      id: `placeholder-${role}`,
+      label,
+      role,
+      rpm: null,
+      mode: 'unknown',
+      pwm_percent: null,
+      controllable: false,
+      mode_controllable: false,
+      missing: true
+    })
+  }
+  if (!rows.length || classified) {
+    ensure('cpu', 'CPU')
+    ensure('chassis', '机箱')
+  }
+  const rank = { cpu: 0, chassis: 1, other: 2 }
+  return rows.sort((a, b) => (rank[a.role] ?? 2) - (rank[b.role] ?? 2) || String(a.label).localeCompare(String(b.label), 'zh'))
 })
+const primaryFan = computed(() => {
+  const rows = fanRows.value
+  const mapped = rows.find((fan) => fan.primary && !fan.missing)
+  if (mapped) return mapped
+  return rows.find((fan) => fan.role === 'cpu' && fan.rpm != null)
+    || rows.find((fan) => fan.rpm != null)
+    || rows[0]
+})
+const secondaryFans = computed(() => fanRows.value.filter((fan) => fan.id !== primaryFan.value?.id))
 const fanPill = computed(() => {
   if (!fanItems.value.length) return '暂无'
-  if (fanControl.value === 'ready') return `${fanItems.value.length} 路`
+  if (fanControl.value === 'ready') return '可调'
   return '只读'
 })
-const fanMode = computed(() => {
-  const modes = fanItems.value.map((f) => f.mode).filter(Boolean)
-  if (!modes.length || modes.some((m) => m !== modes[0])) return ''
-  return modes[0]
+const fanPillClass = computed(() => {
+  if (!fanItems.value.length) return 'muted'
+  if (fanControl.value === 'ready') return 'ok'
+  if (snap.value?.reason === 'readback_mismatch') return 'warn'
+  return 'muted'
+})
+const coolingText = computed(() => {
+  if (tempState.value?.cls === 'warn') return tempState.value.text
+  if (!fanItems.value.length) return '暂无风扇'
+  const known = fanItems.value.filter((fan) => fan.rpm != null)
+  if (!known.length) return '转速未知'
+  if (known.some((fan) => Number(fan.rpm) > 0)) return '冷却运行中'
+  return '风扇停转'
 })
 const fanPreset = computed(() => {
-  if (fanMode.value !== 'manual') return ''
-  const known = fanItems.value.find((f) => f.pwm_percent != null)
-  if (!known) return ''
-  const value = Number(known.pwm_percent)
+  const manual = fanItems.value.filter((fan) => fan.controllable && fan.mode === 'manual' && fan.pwm_percent != null)
+  if (!manual.length) return ''
+  const value = Number(manual[0].pwm_percent)
+  if (manual.some((fan) => Math.abs(Number(fan.pwm_percent) - value) > 2)) return ''
   if (Math.abs(value - 30) <= 2) return 'silent'
   if (Math.abs(value - 55) <= 2) return 'normal'
   if (Math.abs(value - 85) <= 2) return 'performance'
   return ''
 })
 
-const trend = computed(() => buildTrend(hist.value, seriesOn, trendMode.value))
+const trend = computed(() => buildTrend(hist.value, seriesOn, trendMode.value, now.value.getTime()))
 
 function selectTrend(key) {
   if (key === 'load' || key === 'temp') {
@@ -374,6 +496,7 @@ async function load() {
     ])
     meta.value = m
     snap.value = s
+    holdSlow(s)
     alerts.value = a
     rememberLocalName(m?.hostname)
     err.value = ''
@@ -388,7 +511,7 @@ async function load() {
       err.value = e.message || '加载失败'
     }
   }
-  const [cpu, mem, load, temp, up, down, dock] = await Promise.all([
+  const [cpu, mem, loadSeries, temp, up, down, dock] = await Promise.all([
     safeHist('cpu.pct'),
     safeHist('mem.used_pct'),
     safeHist('load1'),
@@ -397,20 +520,42 @@ async function load() {
     safeHist('net.down_bps'),
     safeJson('/docker/containers')
   ])
-  hist.value = {
-    cpu: cpu ?? hist.value.cpu,
-    mem: mem ?? hist.value.mem,
-    load: load ?? hist.value.load,
-    temp: temp ?? hist.value.temp,
-    up: up ?? hist.value.up,
-    down: down ?? hist.value.down
-  }
+  hist.value = mergeHist(hist.value, {
+    cpu: cpu || [],
+    mem: mem || [],
+    load: loadSeries || [],
+    temp: temp || [],
+    up: up || [],
+    down: down || []
+  })
+  const live = liveSeries(snap.value)
+  if (live) hist.value = mergeHist(hist.value, live)
   if (dock) containers.value = dock.containers || []
+}
+
+function liveSeries(snapshot) {
+  const ts = snapshot?.ts
+  const hostRow = snapshot?.host || {}
+  if (!ts) return null
+  const point = (value) => (
+    value == null || Number.isNaN(Number(value)) ? [] : [{ ts, value: Number(value) }]
+  )
+  return {
+    cpu: point(hostRow.cpu_pct),
+    mem: point(hostRow.mem_used_pct),
+    load: point(hostRow.load1),
+    temp: point(hostRow.temps_c?.cpu),
+    up: point(hostRow.net_up_bps),
+    down: point(hostRow.net_down_bps)
+  }
 }
 
 async function safeHist(metric) {
   try {
-    const r = await api(`/metrics/history?metric=${encodeURIComponent(metric)}&step=60`)
+    const from = new Date(Date.now() - TREND_WINDOW_MS).toISOString()
+    const r = await api(
+      `/metrics/history?metric=${encodeURIComponent(metric)}&step=1&from=${encodeURIComponent(from)}`
+    )
     return r.points || []
   } catch {
     return null
@@ -430,6 +575,27 @@ function poolName(mount) {
   return mount || '—'
 }
 
+function poolBadge(fs) {
+  const level = fs?.layout || ''
+  const kind = fs?.fstype || ''
+  if (level && kind) return `[${level}]-[${kind}]`
+  if (kind) return `[${kind}]`
+  if (level) return `[${level}]`
+  return ''
+}
+
+function roleClass(role) {
+  if (role === '系统盘') return 'os'
+  if (role === '缓存') return 'cache'
+  if (role === '外接') return 'ext'
+  return 'pool'
+}
+
+function healthTone(count, badCls) {
+  if (!healthReady.value) return 'muted'
+  return Number(count) > 0 ? badCls : 'ok'
+}
+
 function barColor(pct) {
   const n = Number(pct)
   if (Number.isNaN(n)) return 'teal'
@@ -440,7 +606,7 @@ function barColor(pct) {
 
 function diskHealth(d) {
   if (d.skipped_standby) return { label: '休眠', cls: 'muted' }
-  if (d.healthy === false) return { label: 'FAIL', cls: 'bad' }
+  if (d.healthy === false) return { label: 'FAIL', cls: 'crit' }
   if (d.healthy === true) return { label: 'OK', cls: 'ok' }
   return { label: '—', cls: 'muted' }
 }
@@ -458,6 +624,11 @@ function resetView() {
   alerts.value = []
   containers.value = []
   hist.value = { cpu: [], mem: [], load: [], temp: [], up: [], down: [] }
+  diskPage.value = 0
+  heldFs.value = null
+  heldSmart.value = null
+  fsAt = null
+  smartAt = null
 }
 
 async function openDrawer(id) {
@@ -485,7 +656,7 @@ function onDrawerToggle(e) {
 }
 
 function armPoll() {
-  const ms = intervalSec.value * 1000
+  const ms = overviewSec.value * 1000
   if (poll && pollDelay === ms) return
   pollDelay = ms
   clearInterval(poll)
@@ -516,10 +687,20 @@ watch(() => nas.activeId, () => {
 watch(() => route.hash, (hash) => {
   if (hash) openDrawer(hash.slice(1))
 })
+watch(diskOpen, (open) => {
+  if (open && snap.value) holdSlow(snap.value, true)
+})
 watch(fanItems, (items) => {
-  if (pwmHold.value) return
-  const known = items.find((f) => f.pwm_percent != null)
-  if (known) pwmDraft.value = Math.max(25, Number(known.pwm_percent))
+  const floor = minPwm.value
+  for (const fan of items) {
+    if (pwmHoldId.value === fan.id) continue
+    if (!fan.controllable) {
+      pwmDrafts[fan.id] = floor
+      continue
+    }
+    if (fan.pwm_percent != null) pwmDrafts[fan.id] = Math.max(floor, Number(fan.pwm_percent))
+    else if (pwmDrafts[fan.id] == null) pwmDrafts[fan.id] = floor
+  }
 })
 onUnmounted(() => {
   clearInterval(poll)
@@ -567,12 +748,6 @@ function coreTempText(v) {
   return `${Math.round(Number(v))}°`
 }
 
-function fanTone(label, index) {
-  if (label === 'CPU') return 'cpu'
-  if (label === '机箱') return 'case'
-  return index % 2 === 0 ? 'cpu' : 'case'
-}
-
 function fanReasonText(code) {
   const map = {
     control_disabled: '调速未开启',
@@ -593,26 +768,30 @@ async function postFan(path, body) {
     fanMsg.value = e.message || '调速失败'
   } finally {
     fanBusy.value = false
-    pwmHold.value = false
+    pwmHoldId.value = ''
     await load()
   }
 }
 
-async function setFanMode(mode) {
-  if (!fanWritable.value || fanBusy.value) return
-  const ids = fanItems.value.filter((f) => f.controllable).map((f) => f.id)
-  for (const id of ids) {
-    await postFan(`/fans/${encodeURIComponent(id)}/mode`, { mode })
-  }
+function fanCanMode(fan) {
+  return !!(fan && fan.controllable && fan.mode_controllable !== false && !fan.missing)
 }
 
-async function setFanPwm() {
-  if (!fanWritable.value || fanBusy.value) return
-  const percent = Math.round(Number(pwmDraft.value))
-  const ids = fanItems.value.filter((f) => f.controllable).map((f) => f.id)
-  for (const id of ids) {
-    await postFan(`/fans/${encodeURIComponent(id)}/pwm`, { percent })
-  }
+function fanLockText(fan) {
+  if (fan?.missing) return '未检测到'
+  return fanReasonText(snap.value?.reason) || '系统未提供可写转速'
+}
+
+async function setFanMode(fan, mode) {
+  if (!fanCanMode(fan) || fanBusy.value) return
+  await postFan(`/fans/${encodeURIComponent(fan.id)}/mode`, { mode })
+}
+
+async function setFanPwm(fan) {
+  if (!fan?.controllable || fan.missing || fanBusy.value) return
+  const percent = Math.round(Number(pwmDrafts[fan.id]))
+  if (!Number.isFinite(percent)) return
+  await postFan(`/fans/${encodeURIComponent(fan.id)}/pwm`, { percent })
 }
 
 async function setFanPreset(preset) {
@@ -627,7 +806,7 @@ const TREND_DRAW = {
   temp: { color: '#f08a3a' }
 }
 
-function buildTrend(series, enabled, mode) {
+function buildTrend(series, enabled, mode, nowMs) {
   const w = 640
   const h = 240
   const keys = mode === 'load' ? ['load'] : mode === 'temp' ? ['temp'] : ['cpu', 'mem'].filter((key) => enabled[key])
@@ -638,15 +817,15 @@ function buildTrend(series, enabled, mode) {
       .filter((v) => !Number.isNaN(v))
     if (values.length < 2) continue
     const domain = trendDomain(key, values)
-    const d = linePath(values, w, h, domain)
-    if (d) paths.push({ key, color: TREND_DRAW[key].color, d, domain })
+    const d = linePathTimed(series[key], w, h, domain, nowMs)
+    if (d) paths.push({ key, color: TREND_DRAW[key].color, d, domain, points: series[key] })
   }
   const first = paths[0]
   return {
     has: paths.length > 0,
     paths,
     domain: first?.domain ?? 100,
-    area: mode === 'percent' && first ? `${first.d} L ${w} ${h} L 0 ${h} Z` : '',
+    area: mode === 'percent' && first ? areaUnder(first.d, first.points, w, h, nowMs) : '',
     areaColor: first?.color || '#2ec9c0'
   }
 }
@@ -656,19 +835,6 @@ function trendDomain(key, values) {
   if (key === 'cpu' || key === 'mem') return 100
   if (key === 'load') return Math.max(1, peak * 1.25)
   return Math.max(100, peak)
-}
-
-function linePath(values, w, h, domainMax) {
-  const n = values.length
-  const max = domainMax > 0 ? domainMax : 1
-  const yOf = (v) => h - (Math.max(0, Math.min(max, v)) / max) * (h - 10) - 4
-  if (!n || n < 2) return ''
-  return values
-    .map((v, i) => {
-      const x = (i / (n - 1)) * w
-      return `${i ? 'L' : 'M'}${x.toFixed(1)} ${yOf(v).toFixed(1)}`
-    })
-    .join(' ')
 }
 </script>
 
@@ -681,7 +847,7 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-12 id-card">
         <header class="mod-head">
           <span class="mid">M01</span>
-          <span class="mod-title">系统</span>
+          <span class="mod-title"><Monitor :size="15" /> 系统</span>
           <span class="pill head-pill push" :class="hostStatus.cls">
             <i class="dot"></i>{{ hostStatus.text }}
           </span>
@@ -731,7 +897,7 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-12 res-card">
         <header class="mod-head">
           <span class="mid">M02</span>
-          <span class="mod-title">资源</span>
+          <span class="mod-title"><Gauge :size="15" /> 资源</span>
           <span v-if="loadState" class="pill head-pill push" :class="loadState.cls">
             <i class="dot"></i>{{ loadState.text }}
           </span>
@@ -789,8 +955,8 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-12 trend-card">
         <header class="mod-head">
           <span class="mid">M03</span>
-          <span class="mod-title">趋势</span>
-          <span class="pill muted head-pill push">近 1 小时</span>
+          <span class="mod-title"><Activity :size="15" /> 趋势</span>
+          <span class="pill muted head-pill push">近 3 分钟</span>
         </header>
         <div v-if="trend.has" class="trend-plot">
           <div v-if="trendMode === 'percent'" class="y-axis" aria-hidden="true">
@@ -798,9 +964,9 @@ function linePath(values, w, h, domainMax) {
             <span>0</span>
           </div>
           <svg viewBox="0 0 640 240" class="trend" preserveAspectRatio="none">
-            <line x1="0" y1="8" x2="640" y2="8" stroke="#eef1f4" />
-            <line x1="0" y1="120" x2="640" y2="120" stroke="#eef1f4" />
-            <line x1="0" y1="232" x2="640" y2="232" stroke="#eef1f4" />
+            <line x1="0" y1="8" x2="640" y2="8" stroke="var(--track)" />
+            <line x1="0" y1="120" x2="640" y2="120" stroke="var(--track)" />
+            <line x1="0" y1="232" x2="640" y2="232" stroke="var(--track)" />
             <path v-if="trend.area" :d="trend.area" :fill="trend.areaColor" fill-opacity="0.16" stroke="none" />
             <path
               v-for="p in trend.paths"
@@ -817,7 +983,7 @@ function linePath(values, w, h, domainMax) {
         </div>
         <div v-else class="trend-empty">暂无趋势</div>
         <div class="x-axis">
-          <span>1 小时前</span>
+          <span>3 分钟前</span>
           <span>现在</span>
         </div>
         <p v-if="trendCaption" class="trend-caption">{{ trendCaption }}</p>
@@ -840,8 +1006,10 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-3 net-card">
         <header class="mod-head">
           <span class="mid">M04</span>
-          <span class="mod-title">网络</span>
-          <span v-if="netPace" class="pill head-pill push" :class="netPace === '传输中' ? 'ok' : 'muted'">
+          <span class="mod-title"><Network :size="15" /> 网络</span>
+          <span v-if="netIface" class="iface-name push">{{ netIface }}</span>
+          <span v-if="netSpeed" class="pill ok head-pill" :class="{ push: !netIface }">{{ netSpeed }}</span>
+          <span v-if="netPace" class="pill head-pill" :class="[netPace === '传输中' ? 'ok' : 'muted', { push: !netIface && !netSpeed }]">
             <i class="dot"></i>{{ netPace }}
           </span>
         </header>
@@ -862,7 +1030,7 @@ function linePath(values, w, h, domainMax) {
           </svg>
           <div v-else class="net-empty">{{ netChartText }}</div>
           <div class="x-axis net-axis">
-            <span>更早</span>
+            <span>3 分钟前</span>
             <span>现在</span>
           </div>
         </div>
@@ -871,7 +1039,7 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-4 cpu-card">
         <header class="mod-head">
           <span class="mid">M05</span>
-          <span class="mod-title">CPU</span>
+          <span class="mod-title"><Cpu :size="15" /> CPU</span>
           <div class="head-right">
             <span v-if="host.cpu_pct != null" class="cpu-sum">整机 {{ formatPct(host.cpu_pct, 0) }}%</span>
             <button v-if="otherTemps.length" type="button" class="fold" @click="tempsOpen = true">
@@ -890,11 +1058,11 @@ function linePath(values, w, h, domainMax) {
             <div class="ring-wrap">
               <svg viewBox="0 0 120 120" class="core-svg" :aria-label="'核 ' + i">
                 <g fill="none" stroke-linecap="round" transform="rotate(-90 60 60)">
-                  <circle cx="60" cy="60" r="48" stroke="#f6e7da" stroke-width="9" />
+                  <circle cx="60" cy="60" r="48" stroke="var(--ring-temp-track)" stroke-width="9" />
                   <circle cx="60" cy="60" r="48" stroke="#f08a3a" stroke-width="9" :stroke-dasharray="coreArcs(core).temp.dash" :stroke-dashoffset="coreArcs(core).temp.offset" />
-                  <circle cx="60" cy="60" r="36" stroke="#e4ebf8" stroke-width="9" />
+                  <circle cx="60" cy="60" r="36" stroke="var(--ring-use-track)" stroke-width="9" />
                   <circle cx="60" cy="60" r="36" stroke="#5b8def" stroke-width="9" :stroke-dasharray="coreArcs(core).use.dash" :stroke-dashoffset="coreArcs(core).use.offset" />
-                  <circle cx="60" cy="60" r="24" stroke="#e3f6f4" stroke-width="9" />
+                  <circle cx="60" cy="60" r="24" stroke="var(--ring-freq-track)" stroke-width="9" />
                   <circle cx="60" cy="60" r="24" stroke="#2ec9c0" stroke-width="9" :stroke-dasharray="coreArcs(core).freq.dash" :stroke-dashoffset="coreArcs(core).freq.offset" />
                 </g>
               </svg>
@@ -913,55 +1081,58 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-3 fan-card">
         <header class="mod-head">
           <span class="mid">M06</span>
-          <span class="mod-title">风扇</span>
-          <span class="pill head-pill push" :class="fanControl === 'ready' ? 'ok' : 'muted'">
+          <span class="mod-title"><Fan :size="15" /> 风扇</span>
+          <span class="pill head-pill push" :class="fanPillClass">
             <i class="dot"></i>{{ fanPill }}
           </span>
         </header>
-        <div class="fan-stage">
-          <div
-            class="fan-grid"
-            :style="{ gridTemplateColumns: `repeat(${fanCols}, minmax(0, 1fr))` }"
-          >
-            <article v-for="(fan, i) in fanSlots" :key="fan.id" class="fan-unit">
-              <svg viewBox="0 0 64 64" class="fan-svg" :class="fanTone(fan.label, i)" aria-hidden="true">
-                <circle cx="32" cy="32" r="28" fill="currentColor" opacity="0.14" />
-                <g fill="currentColor">
-                  <ellipse cx="32" cy="16" rx="7" ry="12" />
-                  <ellipse cx="32" cy="16" rx="7" ry="12" transform="rotate(120 32 32)" />
-                  <ellipse cx="32" cy="16" rx="7" ry="12" transform="rotate(240 32 32)" />
-                </g>
-                <circle cx="32" cy="32" r="4" fill="#fff" />
-              </svg>
-              <div class="fan-rpm">{{ fan.rpm == null ? '—' : fan.rpm }}</div>
-              <div class="fan-label">{{ fan.label }}<template v-if="fan.rpm != null"> RPM</template></div>
-            </article>
+        <div class="fan-hero">
+          <div>
+            <div class="fan-temp">{{ cpuTemp != null ? Math.round(Number(cpuTemp)) + '°C' : '—' }}</div>
+            <div class="fan-status" :class="tempState?.cls || ''">{{ coolingText }}</div>
           </div>
-          <div v-if="!fanItems.length" class="fan-empty">暂无风扇</div>
+          <div class="fan-hero-rpm">
+            <div class="fan-rpm">{{ primaryFan?.rpm == null ? '—' : primaryFan.rpm }}</div>
+            <div class="fan-label">{{ primaryFan?.label || '风扇' }}<template v-if="primaryFan?.rpm != null"> RPM</template></div>
+          </div>
         </div>
-        <div class="fan-ctrl" :class="{ off: !fanWritable }">
-          <div class="fan-seg">
-            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanMode === 'auto' }" @click="setFanMode('auto')">自动</button>
-            <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanMode === 'manual' }" @click="setFanMode('manual')">手动</button>
-          </div>
-          <div class="fan-seg">
+        <div v-if="secondaryFans.length" class="fan-secondary">
+          <span v-for="fan in secondaryFans" :key="fan.id">{{ fan.label }} {{ fan.rpm == null ? '—' : fan.rpm }}</span>
+        </div>
+        <div class="fan-ctrl">
+          <div class="fan-seg" :class="{ off: !fanWritable }">
             <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanPreset === 'silent' }" @click="setFanPreset('silent')">静音</button>
             <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanPreset === 'normal' }" @click="setFanPreset('normal')">标准</button>
             <button type="button" :disabled="!fanWritable || fanBusy" :class="{ on: fanPreset === 'performance' }" @click="setFanPreset('performance')">强劲</button>
           </div>
-          <label class="fan-pwm">
-            <span>PWM</span>
-            <input
-              type="range"
-              min="25"
-              max="100"
-              :disabled="!fanWritable || fanBusy"
-              v-model.number="pwmDraft"
-              @pointerdown="pwmHold = true"
-              @change="setFanPwm"
-            />
-            <b>{{ pwmDraft }}%</b>
-          </label>
+          <p v-if="fanMixed" class="fan-note">预设只作用于可调风扇</p>
+          <div
+            v-for="fan in fanRows"
+            :key="fan.id"
+            class="fan-line"
+            :class="{ locked: !fan.controllable }"
+            :title="fan.controllable ? '' : fanLockText(fan)"
+          >
+            <span class="fan-line-name">{{ fan.label }}<template v-if="fan.rpm != null"> {{ fan.rpm }}</template></span>
+            <div class="fan-seg">
+              <button type="button" :disabled="!fanCanMode(fan) || fanBusy" :class="{ on: fan.controllable && fan.mode === 'auto' }" @click="setFanMode(fan, 'auto')">自动</button>
+              <button type="button" :disabled="!fanCanMode(fan) || fanBusy" :class="{ on: fan.controllable && fan.mode === 'manual' }" @click="setFanMode(fan, 'manual')">手动</button>
+            </div>
+            <label class="fan-pwm">
+              <input
+                type="range"
+                :min="minPwm"
+                max="100"
+                :disabled="!fan.controllable || fanBusy"
+                :value="fan.controllable ? (pwmDrafts[fan.id] ?? minPwm) : minPwm"
+                @pointerdown="fan.controllable && (pwmHoldId = fan.id)"
+                @input="fan.controllable && (pwmDrafts[fan.id] = Number($event.target.value))"
+                @change="setFanPwm(fan)"
+              />
+              <b v-if="fan.controllable">{{ pwmDrafts[fan.id] ?? minPwm }}%</b>
+              <b v-else class="fan-lock">不可调</b>
+            </label>
+          </div>
           <p v-if="fanMsg || fanReasonText(snap?.reason)" class="fan-note">{{ fanMsg || fanReasonText(snap?.reason) }}</p>
         </div>
       </section>
@@ -969,7 +1140,7 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-7 docker-card">
         <header class="mod-head">
           <span class="mid">M07</span>
-          <span class="mod-title">Docker</span>
+          <span class="mod-title"><Container :size="15" /> Docker</span>
           <div class="top-switch push">
             <button type="button" class="chip" :class="{ on: topMetric === 'cpu' }" @click="topMetric = 'cpu'">按 CPU</button>
             <button type="button" class="chip" :class="{ on: topMetric === 'mem' }" @click="topMetric = 'mem'">按内存</button>
@@ -1020,19 +1191,17 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-5 pool-card">
         <header class="mod-head">
           <span class="mid">M08</span>
-          <span class="mod-title">存储池</span>
+          <span class="mod-title"><Database :size="15" /> 存储池</span>
           <span class="io-note push">{{ diskIoText || '读写暂无数据' }}</span>
           <a class="mod-link" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">磁盘详情</a>
         </header>
         <div v-if="filesystems.length" class="pool-row">
           <div v-for="fs in filesystems" :key="fs.id" class="pool">
-            <div class="pool-name">
-              {{ poolName(fs.mount) }}
-              <span v-if="fs.fstype" class="pool-fs">[{{ fs.fstype }}]</span>
-            </div>
+            <div class="pool-name">{{ poolName(fs.mount) }}</div>
+            <div v-if="poolBadge(fs)" class="pool-badge">{{ poolBadge(fs) }}</div>
             <div class="pool-fig">
-              <b>{{ formatBytes(fs.used_bytes) }}</b>
-              <span>/ {{ formatBytes(fs.total_bytes) }}</span>
+              <b>{{ capacityText(fs.used_bytes) }}</b>
+              <span>/ {{ capacityText(fs.total_bytes) }}</span>
             </div>
             <div class="seg" :class="barColor(fs.used_pct)" :style="{ '--p': clampPct(fs.used_pct) + '%' }"></div>
             <div class="pool-pct" :class="barColor(fs.used_pct)">{{ formatPct(fs.used_pct, 0) }}%</div>
@@ -1044,23 +1213,29 @@ function linePath(values, w, h, domainMax) {
       <section class="card mod span-12 disk-card">
         <header class="mod-head">
           <span class="mid">M09</span>
-          <span class="mod-title">硬盘</span>
+          <span class="mod-title"><HardDrive :size="15" /> 硬盘</span>
           <span class="health-sum push">
             OK {{ diskRollup.ok }}
             · FAIL <em :class="{ bad: diskRollup.fail > 0 }">{{ diskRollup.fail }}</em>
             · 休眠 {{ diskRollup.standby }}
             · 最热 {{ diskRollup.hot != null ? diskRollup.hot + '°C' : '—' }}
           </span>
+          <div v-if="diskPageCount > 1" class="disk-pager">
+            <button type="button" :disabled="diskPage === 0" @click="diskPage -= 1">上一页</button>
+            <span>{{ diskPage + 1 }}/{{ diskPageCount }}</span>
+            <button type="button" :disabled="diskPage >= diskPageCount - 1" @click="diskPage += 1">下一页</button>
+          </div>
         </header>
-        <div v-if="disks.length" class="disk-row">
-          <article v-for="d in disks" :key="d.id" class="disk">
-            <div class="disk-cap">{{ d.capacity_bytes != null ? formatBytes(d.capacity_bytes) : '—' }}</div>
+        <div v-if="diskPageItems.length" class="disk-row">
+          <article v-for="d in diskPageItems" :key="d.id" class="disk">
+            <span v-if="d.role" class="disk-role" :class="roleClass(d.role)">{{ d.role }}</span>
+            <div class="disk-cap">{{ capacityText(d.capacity_bytes, d.label_bytes) }}</div>
             <div v-if="d.media" class="disk-media">{{ d.media }}</div>
-            <div class="disk-id">{{ d.id }}</div>
+            <div class="disk-id" :title="d.id">{{ d.display_name || d.label || d.id }}</div>
             <div class="disk-k">温度</div>
             <div class="disk-temp">{{ d.temp_c != null ? d.temp_c + '°C' : '—' }}</div>
             <div class="disk-k">健康</div>
-            <div class="disk-health" :class="diskHealth(d).cls">{{ diskHealth(d).label }}</div>
+            <div class="pill disk-health" :class="diskHealth(d).cls">{{ diskHealth(d).label }}</div>
           </article>
         </div>
         <div v-else class="pool-empty">暂无硬盘</div>
@@ -1068,22 +1243,25 @@ function linePath(values, w, h, domainMax) {
 
       <section class="card mod span-12 alerts">
         <div class="health-strip">
-          <a class="health-cell" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">
+          <a class="health-cell pill" :class="healthTone(unackedCount, 'crit')" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">
+            <i class="dot"></i>
             <span class="k">未确认告警</span>
-            <b :class="{ bad: unackedCount > 0 }">{{ healthReady ? unackedCount : '—' }}</b>
+            <b>{{ healthReady ? unackedCount : '—' }}</b>
           </a>
-          <a class="health-cell" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">
+          <a class="health-cell pill" :class="healthTone(smartFail, 'crit')" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">
+            <i class="dot"></i>
             <span class="k">硬盘异常</span>
-            <b :class="{ bad: smartFail > 0 }">{{ healthReady ? smartFail : '—' }}</b>
+            <b>{{ healthReady ? smartFail : '—' }}</b>
           </a>
-          <a class="health-cell" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">
+          <a class="health-cell pill" :class="healthTone(dockerDown, 'warn')" href="#docker-detail" @click.prevent="openDrawer('docker-detail')">
+            <i class="dot"></i>
             <span class="k">未运行容器</span>
-            <b :class="{ warn: dockerDown > 0 }">{{ healthReady ? dockerDown : '—' }}</b>
+            <b>{{ healthReady ? dockerDown : '—' }}</b>
           </a>
         </div>
         <div class="alert-bar">
         <header class="mod-head">
-          <span class="mod-title">最近告警</span>
+          <span class="mod-title"><Bell :size="15" /> 最近告警</span>
           <a class="mod-link push" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">全部</a>
         </header>
         <div v-if="recentAlerts.length" class="alert-list">
@@ -1170,12 +1348,19 @@ function linePath(values, w, h, domainMax) {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: #9aa3b2;
+  color: var(--mid);
 }
 
 .mod-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+.mod-title :deep(svg) {
+  flex: none;
+  color: var(--accent);
 }
 
 .push { margin-left: auto; }
@@ -1215,7 +1400,7 @@ function linePath(values, w, h, domainMax) {
 }
 .id-host { color: var(--muted); font-size: 1.05rem; }
 .id-fresh { color: var(--muted); font-size: 1.2rem; font-variant-numeric: tabular-nums; }
-.id-fresh.stale { color: #b45309; font-weight: 700; }
+.id-fresh.stale { color: var(--warn); font-weight: 700; }
 .id-clock {
   display: flex;
   justify-content: space-between;
@@ -1224,7 +1409,7 @@ function linePath(values, w, h, domainMax) {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
-  color: #607086;
+  color: var(--soft);
   font-size: 1.05rem;
   font-variant-numeric: tabular-nums;
 }
@@ -1244,7 +1429,7 @@ function linePath(values, w, h, domainMax) {
 .id-card .fact b.clip { white-space: nowrap; }
 .id-ver {
   margin-top: 8px;
-  color: #9aa3b2;
+  color: var(--faint);
   font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
 }
@@ -1267,7 +1452,7 @@ function linePath(values, w, h, domainMax) {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  color: #607086;
+  color: var(--soft);
   font-size: 0.92rem;
 }
 
@@ -1289,7 +1474,7 @@ function linePath(values, w, h, domainMax) {
 .k {
   font-size: 0.68rem;
   letter-spacing: 0.08em;
-  color: #9aa3b2;
+  color: var(--faint);
   font-weight: 700;
 }
 
@@ -1307,7 +1492,7 @@ function linePath(values, w, h, domainMax) {
   gap: 12px;
   align-items: baseline;
 }
-.fact span { color: #9aa3b2; font-size: 0.75rem; flex: none; }
+.fact span { color: var(--faint); font-size: 0.75rem; flex: none; }
 .fact b {
   font-weight: 650;
   font-variant-numeric: tabular-nums;
@@ -1323,7 +1508,7 @@ function linePath(values, w, h, domainMax) {
   gap: 8px;
   font-size: 0.78rem;
   letter-spacing: 0.06em;
-  color: #8b95a5;
+  color: var(--faint);
   font-weight: 700;
 }
 .metric-top b {
@@ -1350,7 +1535,7 @@ function linePath(values, w, h, domainMax) {
   height: 12px;
   border-radius: 7px;
   position: relative;
-  background: repeating-linear-gradient(90deg, #e3e8ee 0 8px, transparent 8px 11px);
+  background: repeating-linear-gradient(90deg, var(--seg-track) 0 8px, transparent 8px 11px);
   overflow: hidden;
 }
 .seg::after {
@@ -1386,7 +1571,7 @@ function linePath(values, w, h, domainMax) {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  color: #8b95a5;
+  color: var(--faint);
   font-size: 1rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -1399,21 +1584,21 @@ function linePath(values, w, h, domainMax) {
   display: grid;
   place-items: center;
   border-radius: 14px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.8rem;
   font-weight: 700;
 }
 .x-axis {
   display: flex;
   justify-content: space-between;
-  color: #6d7886;
+  color: var(--muted);
   font-size: 1rem;
   font-weight: 700;
 }
 .trend-caption {
   margin: 0;
-  color: #3d4754;
+  color: var(--ink);
   font-size: 1.15rem;
   font-weight: 700;
 }
@@ -1422,7 +1607,7 @@ function linePath(values, w, h, domainMax) {
   flex-wrap: wrap;
   gap: 12px;
   font-size: 0.8rem;
-  color: #607086;
+  color: var(--soft);
   font-variant-numeric: tabular-nums;
 }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -1435,8 +1620,8 @@ function linePath(values, w, h, domainMax) {
 .swatch.down { background: #8b7cf6; }
 .chip {
   border: 0;
-  background: #f4f6f8;
-  color: #607086;
+  background: var(--track);
+  color: var(--soft);
   border-radius: 999px;
   padding: 4px 10px;
   font: inherit;
@@ -1452,10 +1637,10 @@ function linePath(values, w, h, domainMax) {
   padding: 8px 16px;
   font-size: 1.05rem;
 }
-.chip.on { background: #e7f6f4; color: var(--teal-ink); }
+.chip.on { background: var(--teal-soft); color: var(--teal-ink); }
 .trend-card .swatch { width: 22px; height: 6px; }
 .age.stale {
-  color: #b45309;
+  color: var(--warn);
   background: var(--warn-bg);
   border-radius: 999px;
   padding: 2px 8px;
@@ -1469,15 +1654,15 @@ function linePath(values, w, h, domainMax) {
   height: 10px;
   border-radius: 50%;
 }
-.net-card .k { font-size: 0.92rem; color: #607086; }
+.net-card .k { font-size: 0.92rem; color: var(--soft); }
 .net-empty {
   flex: 1;
   min-height: 64px;
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.25rem;
   font-weight: 700;
 }
@@ -1499,9 +1684,9 @@ function linePath(values, w, h, domainMax) {
   min-height: 88px;
   border-radius: 14px;
   background:
-    linear-gradient(#f7f8fb, #f7f8fb) padding-box,
+    linear-gradient(var(--chip), var(--chip)) padding-box,
     repeating-linear-gradient(90deg, transparent, transparent 12px, rgba(140, 150, 170, 0.18) 12px, rgba(140, 150, 170, 0.18) 13px);
-  color: #9aa3b2;
+  color: var(--faint);
   font-size: 0.9rem;
 }
 .empty.grow { min-height: 120px; }
@@ -1552,7 +1737,7 @@ function linePath(values, w, h, domainMax) {
   place-items: center;
   font-size: 0.72rem;
   font-weight: 700;
-  color: #8b95a5;
+  color: var(--faint);
   pointer-events: none;
 }
 .core-line {
@@ -1570,11 +1755,11 @@ function linePath(values, w, h, domainMax) {
 .core-line .use { color: #3d6fd8; }
 .core-line .hz { color: #0f8f88; }
 .core-line.deg { color: #e07a2f; font-size: clamp(13px, 20cqw, 18px); }
-.core-line.deg.miss { color: #9aa3b2; }
+.core-line.deg.miss { color: var(--faint); }
 .fold {
   border: 0;
-  background: #f4f6f8;
-  color: #607086;
+  background: var(--track);
+  color: var(--soft);
   font: inherit;
   font-size: 0.75rem;
   font-weight: 700;
@@ -1587,7 +1772,7 @@ function linePath(values, w, h, domainMax) {
   position: fixed;
   inset: 0;
   z-index: 70;
-  background: rgba(28, 36, 48, 0.38);
+  background: var(--overlay);
   display: grid;
   place-items: center;
   padding: 24px;
@@ -1596,7 +1781,7 @@ function linePath(values, w, h, domainMax) {
   width: min(420px, 100%);
   max-height: min(70vh, 480px);
   overflow: auto;
-  background: #fff;
+  background: var(--card);
   border-radius: 16px;
   padding: 16px 18px 18px;
   box-shadow: var(--shadow);
@@ -1629,21 +1814,29 @@ function linePath(values, w, h, domainMax) {
   gap: 8px;
 }
 .alert-bar { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.fan-stage {
-  position: relative;
-  flex: 1;
-  min-height: 0;
+.fan-hero {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  gap: 2px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
 }
-.fan-grid { width: 100%; display: grid; gap: 6px; align-items: center; }
-.fan-unit { min-width: 0; display: grid; justify-items: center; }
-.fan-svg { width: min(72px, 100%); height: auto; }
-.fan-svg.cpu { color: #2ec9c0; }
-.fan-svg.case { color: #8b7cf6; }
+.fan-temp {
+  font-size: 1.85rem;
+  font-weight: 750;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.fan-status {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.fan-status.ok { color: var(--ok); }
+.fan-status.warn { color: var(--warn); }
+.fan-hero-rpm { text-align: right; }
 .fan-rpm {
   font-size: 1.55rem;
   font-weight: 700;
@@ -1652,21 +1845,28 @@ function linePath(values, w, h, domainMax) {
   line-height: 1.1;
 }
 .fan-label { color: var(--muted); font-size: 0.75rem; font-weight: 700; }
-.fan-empty {
-  margin: 0;
-  text-align: center;
-  font-size: 1.15rem;
+.fan-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--soft);
+  font-size: 0.78rem;
   font-weight: 700;
-  color: #5c6775;
+  font-variant-numeric: tabular-nums;
 }
-.fan-ctrl { display: grid; gap: 4px; }
-.fan-ctrl.off { opacity: 0.55; }
+.fan-ctrl { display: grid; gap: 4px; flex-shrink: 0; }
 .fan-seg { display: flex; gap: 4px; }
+.fan-seg.off { opacity: 0.55; filter: grayscale(1); }
+.fan-seg.off button,
+.fan-seg button:disabled {
+  background: var(--track);
+  color: var(--faint);
+}
 .fan-seg button {
   flex: 1;
   border: 0;
-  background: #f4f6f8;
-  color: #607086;
+  background: var(--track);
+  color: var(--soft);
   border-radius: 999px;
   font: inherit;
   font-size: 0.75rem;
@@ -1674,26 +1874,54 @@ function linePath(values, w, h, domainMax) {
   min-height: 28px;
   cursor: pointer;
 }
-.fan-seg button.on { background: #e7f6f4; color: var(--teal-ink); }
-.fan-seg button:disabled { cursor: default; }
+.fan-seg button.on { background: var(--accent-soft); color: var(--accent); }
+.fan-seg button:disabled { cursor: not-allowed; }
+.fan-line {
+  display: grid;
+  grid-template-columns: 2.6em auto minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+.fan-line.locked {
+  opacity: 0.48;
+  filter: grayscale(0.9);
+}
+.fan-line-name {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+.fan-line .fan-seg button { min-height: 24px; padding: 0 6px; }
 .fan-pwm {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 0.75rem;
   font-weight: 700;
-  color: #607086;
+  color: var(--soft);
+  min-width: 0;
 }
-.fan-pwm input { flex: 1; min-width: 0; accent-color: #2ec9c0; }
+.fan-pwm input { flex: 1; min-width: 0; accent-color: #6d5bd0; }
+.fan-pwm input:disabled { accent-color: var(--faint); }
 .fan-pwm b { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 2.6em; text-align: right; }
-.fan-note { margin: 0; font-size: 0.72rem; color: #b45309; line-height: 1.3; }
+.fan-lock { color: var(--muted); font-weight: 800; }
+.fan-note { margin: 0; font-size: 0.72rem; color: var(--warn); line-height: 1.3; }
+.iface-name {
+  max-width: 7.2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--accent);
+}
 .health-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 .health-cell {
-  background: #f6f8fa;
+  background: var(--track);
   border-radius: 14px;
   padding: 12px 14px;
   color: inherit;
@@ -1704,9 +1932,12 @@ function linePath(values, w, h, domainMax) {
   font-size: 1.7rem;
   letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
+  color: inherit;
 }
-.health-cell b.bad { color: var(--crit); }
-.health-cell b.warn { color: #b45309; }
+.health-cell.ok { background: var(--ok-bg); color: var(--ok); }
+.health-cell.warn { background: var(--warn-bg); color: var(--warn); }
+.health-cell.crit { background: var(--crit-bg); color: var(--crit); }
+.health-cell.muted { background: var(--track); color: var(--muted); }
 .docker-body {
   flex: 1;
   min-height: 0;
@@ -1720,7 +1951,7 @@ function linePath(values, w, h, domainMax) {
   display: flex;
   flex-direction: column;
   justify-content: space-evenly;
-  gap: 4px;
+  gap: 8px;
 }
 .docker-cols {
   flex: 1;
@@ -1732,7 +1963,7 @@ function linePath(values, w, h, domainMax) {
   overflow: hidden;
 }
 .sum {
-  background: #f6f8fa;
+  background: var(--track);
   border-radius: 14px;
   padding: 6px 10px;
 }
@@ -1752,13 +1983,13 @@ function linePath(values, w, h, domainMax) {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.25rem;
   font-weight: 700;
 }
 .health-sum {
-  color: #607086;
+  color: var(--soft);
   font-size: 0.78rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -1774,34 +2005,34 @@ function linePath(values, w, h, domainMax) {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 1px;
+  gap: 8px;
 }
 .ctr {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) minmax(78px, 1.1fr) minmax(78px, 1.1fr);
-  gap: 4px;
+  grid-template-columns: 8px minmax(64px, 1.4fr) max-content max-content;
+  gap: 8px 6px;
   align-items: center;
-  padding: 0;
-  font-size: 0.78rem;
-  border-radius: 6px;
+  padding: 6px 2px;
+  font-size: 0.92rem;
+  border-radius: 8px;
   flex: none;
-  line-height: 1.15;
+  line-height: 1.35;
 }
-.ctr.hot { background: #fff6e8; }
+.ctr.hot { background: var(--hot-bg); }
 .rank {
   font-size: 0.72rem;
   font-weight: 800;
-  color: #9aa3b2;
+  color: var(--faint);
   text-align: center;
 }
 .ctr-dot {
   width: 8px;
   height: 8px;
   border-radius: 99px;
-  background: #d5dbe3;
+  background: var(--meter);
 }
-.ctr-head { color: #9aa3b2; font-size: 0.68rem; letter-spacing: 0.06em; font-weight: 700; }
-.ctr-head .stat { color: #9aa3b2; }
+.ctr-head { color: var(--faint); font-size: 0.68rem; letter-spacing: 0.06em; font-weight: 700; }
+.ctr-head .stat { color: var(--faint); }
 .ctr-dot.run { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16); }
 .ctr-dot.stop { background: #fb7185; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1818,13 +2049,14 @@ function linePath(values, w, h, domainMax) {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  font-size: 0.9rem;
 }
-.stat.meter .seg { flex: 1; min-width: 36px; }
-.docker-card .seg.sm { height: 8px; }
+.stat.meter .seg { flex: none; width: 28px; min-width: 28px; }
+.docker-card .seg.sm { height: 9px; }
 .stat {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: #4b5568;
+  color: var(--soft);
   font-size: 0.84rem;
 }
 
@@ -1852,9 +2084,22 @@ function linePath(values, w, h, domainMax) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: clamp(0.72rem, 22cqw, 0.95rem);
+  font-size: clamp(0.78rem, 22cqw, 1rem);
 }
-.pool-fs { color: var(--muted); font-weight: 650; margin-left: 4px; }
+.pool-badge {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: clamp(0.68rem, 16cqw, 0.82rem);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
 .pool-fig {
   display: flex;
   gap: 4px;
@@ -1874,7 +2119,7 @@ function linePath(values, w, h, domainMax) {
   white-space: nowrap;
 }
 .pool .seg { height: 9px; }
-.pool-pct.warn { color: #b45309; font-weight: 800; }
+.pool-pct.warn { color: var(--warn); font-weight: 800; }
 .pool-pct.crit { color: var(--crit); font-weight: 800; }
 .pool-empty {
   flex: 1;
@@ -1882,12 +2127,12 @@ function linePath(values, w, h, domainMax) {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.25rem;
   font-weight: 700;
 }
-.pool-card .io-note { font-size: 0.92rem; font-weight: 700; color: #3d4754; letter-spacing: 0; }
+.pool-card .io-note { font-size: 0.92rem; font-weight: 700; color: var(--ink); letter-spacing: 0; }
 
 .disk-row {
   flex: 1;
@@ -1899,18 +2144,58 @@ function linePath(values, w, h, domainMax) {
   align-items: stretch;
 }
 .disk {
+  position: relative;
   flex: 1 1 0;
   min-width: 0;
   container-type: inline-size;
-  background: #f6f8fa;
+  background: var(--disk-tile);
   border-radius: 14px;
-  padding: 8px 8px;
+  padding: 18px 8px 8px;
   display: flex;
   flex-direction: column;
   justify-content: space-evenly;
   gap: 1px;
   overflow: hidden;
 }
+.disk-role {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: clamp(0.58rem, 13cqw, 0.68rem);
+  font-weight: 800;
+  line-height: 1.4;
+}
+.disk-role.os { background: var(--accent-soft); color: var(--accent); }
+.disk-role.pool { background: var(--chip); color: var(--blue); }
+.disk-role.cache { background: var(--accent-soft); color: var(--muted); }
+.disk-role.ext { background: var(--warn-soft); color: var(--warn); }
+.disk-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.disk-pager button {
+  border: 0;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.disk-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
 .disk-cap {
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -1931,7 +2216,7 @@ function linePath(values, w, h, domainMax) {
   margin-top: 2px;
   font-size: clamp(0.58rem, 12cqw, 0.68rem);
   letter-spacing: 0.04em;
-  color: #9aa3b2;
+  color: var(--faint);
   font-weight: 700;
 }
 .disk-temp {
@@ -1941,10 +2226,13 @@ function linePath(values, w, h, domainMax) {
   font-size: clamp(0.8rem, 20cqw, 1.05rem);
   line-height: 1.1;
 }
-.disk-health { font-weight: 800; letter-spacing: 0.04em; font-size: clamp(0.75rem, 18cqw, 0.95rem); }
-.disk-health.ok { color: #15915f; }
-.disk-health.bad { color: var(--crit); }
-.disk-health.muted { color: var(--muted); }
+.disk-health {
+  align-self: flex-start;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  font-size: clamp(0.68rem, 16cqw, 0.82rem);
+  padding: 1px 8px;
+}
 .disk-card .health-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .alert-list { display: grid; gap: 8px; }
@@ -1985,21 +2273,24 @@ function linePath(values, w, h, domainMax) {
   }
   .alerts .health-strip { display: flex; width: auto; flex: none; gap: 10px; }
   .alerts .health-cell {
-    display: flex;
-    align-items: baseline;
-    gap: 4px;
-    padding: 0;
-    background: transparent;
-    border-radius: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: 999px;
   }
-  .alerts .health-cell .k { font-size: 0.68rem; }
-  .alerts .health-cell b { font-size: 0.95rem; }
+  .alerts .health-cell .k { font-size: 0.72rem; color: inherit; }
+  .alerts .health-cell b { font-size: 0.95rem; color: inherit; }
   .alert-bar { flex-direction: row; align-items: center; flex: 1; min-width: 0; gap: 8px; }
   .fan-card { justify-content: space-evenly; gap: 4px; }
-  .fan-svg { width: min(48px, 72%); }
+  .fan-temp { font-size: 1.45rem; }
   .fan-rpm { font-size: 1.25rem; }
-  .fan-seg button { min-height: 22px; font-size: 0.68rem; padding: 0 4px; }
-  .fan-empty { font-size: 0.95rem; }
+  .fan-status { font-size: 0.75rem; margin-top: 2px; }
+  .fan-secondary { display: none; }
+  .fan-seg button { min-height: 20px; font-size: 0.68rem; padding: 0 4px; }
+  .fan-line .fan-seg button { min-height: 18px; }
+  .fan-line { grid-template-columns: auto auto minmax(0, 1fr); }
+  .fan-line-name { white-space: nowrap; }
   .alerts .mod-head { flex: none; min-height: 0; flex-wrap: nowrap; }
   .alerts .alert-list { flex: 1; min-width: 0; align-items: center; }
   .alerts .alert-row { flex: none; flex-wrap: nowrap; white-space: nowrap; }
@@ -2049,10 +2340,13 @@ function linePath(values, w, h, domainMax) {
   .cpu-sum { font-size: 0.72rem; }
   .docker-card { justify-content: space-between; }
   .docker-card .mod-head { flex-wrap: nowrap; }
-  .docker-card .sum { padding: 2px 6px; }
-  .docker-card .sum b { font-size: 1.5rem; }
-  .docker-card .sum span { font-size: 0.68rem; }
-  .ctr-list { overflow: hidden; }
+  .docker-card .sum { padding: 4px 8px; }
+  .docker-card .sum b { font-size: 1.45rem; }
+  .docker-card .sum span { font-size: 0.75rem; }
+  .docker-card .ctr { font-size: 0.92rem; padding: 6px 2px; }
+  .docker-card .ctr-list { gap: 8px; overflow: hidden; }
+  .docker-card .stat.meter b { font-size: 0.9rem; }
+  .docker-card .name { font-weight: 700; }
   .health-cell { padding: 6px 8px; }
   .health-cell b { font-size: 1.25rem; }
 }

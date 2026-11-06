@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test src/utils/capacity.test.js src/utils/trendWindow.test.js src/utils/refreshGate.test.js src/nas/carousel.test.js src/theme/theme.test.js"
   },
   "dependencies": {
+    "@vueuse/core": "^15.0.0",
+    "lucide-vue-next": "^1.0.0",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.12",
     "vue-router": "^4.4.5"
   },

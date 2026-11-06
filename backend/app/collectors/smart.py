@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from app.calibration import advertised_bytes_from_model, attach_disk_identity, wwn_from_smart
+
 log = logging.getLogger(__name__)
 
 
@@ -54,18 +56,21 @@ def _smart_one(dev: str, skip_standby: bool) -> dict[str, Any]:
         chk = _run_smartctl(["-n", "standby", "-i", dev])
         # smartctl 返回 2 常表示 standby
         if chk.returncode in (2,) or "STANDBY" in (chk.stdout + chk.stderr).upper():
-            return {
+            return _with_identity({
                 "id": disk_id,
                 "device": dev,
                 "model": "",
+                "serial": "",
+                "wwn": "",
                 "healthy": None,
                 "temp_c": None,
                 "power_on_hours": None,
                 "capacity_bytes": None,
+                "label_bytes": None,
                 "media": None,
                 "skipped_standby": True,
                 "attrs": [],
-            }
+            })
 
     info = _run_smartctl(["-i", "-H", "-A", "-j", dev])
     data: dict[str, Any] = {}
@@ -129,18 +134,21 @@ def _smart_one(dev: str, skip_standby: bool) -> dict[str, Any]:
         except (TypeError, ValueError):
             capacity = None
 
-    return {
+    return _with_identity({
         "id": disk_id,
         "device": dev,
         "model": model or "",
+        "serial": str(data.get("serial_number") or ""),
+        "wwn": wwn_from_smart(data),
         "healthy": healthy if healthy is not None else True,
         "temp_c": temp,
         "power_on_hours": poh,
         "capacity_bytes": capacity,
+        "label_bytes": advertised_bytes_from_model(model or ""),
         "media": _media_label(data),
         "skipped_standby": False,
         "attrs": attrs_out,
-    }
+    })
 
 
 def _media_label(data: dict[str, Any]) -> str | None:
@@ -180,15 +188,23 @@ def _run_smartctl(args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+def _with_identity(disk: dict[str, Any]) -> dict[str, Any]:
+    attach_disk_identity(disk, read_sysfs=not disk.get("mock"))
+    return disk
+
+
 def _mock_disk() -> dict[str, Any]:
-    return {
+    return _with_identity({
         "id": "sda",
         "device": "/dev/sda",
-        "model": "MOCK-DISK",
+        "model": "MOCK-DISK 4TB",
+        "serial": "MOCK-SN-001",
+        "wwn": "5000C500MOCK0001",
         "healthy": True,
         "temp_c": 34,
         "power_on_hours": 1000,
         "capacity_bytes": 4000787030016,
+        "label_bytes": 4_000_000_000_000,
         "media": "SATA HDD",
         "skipped_standby": False,
         "attrs": [
@@ -196,4 +212,4 @@ def _mock_disk() -> dict[str, Any]:
             {"id": 187, "name": "Reported_Uncorrect", "raw": "0", "worst": 100},
         ],
         "mock": True,
-    }
+    })

@@ -15,6 +15,7 @@ from typing import Any
 
 import psutil
 
+from app.calibration import apply_fan_mapping
 from app.config import get_config
 
 log = logging.getLogger(__name__)
@@ -37,14 +38,32 @@ class FanRejected(Exception):
         super().__init__(message)
 
 
+def _role(raw: str) -> str:
+    text = (raw or "").strip().lower().replace("_", " ").replace("-", " ")
+    if "cpu" in text or "processor" in text:
+        return "cpu"
+    if any(key in text for key in ("chassis", "case", "system", "sys fan", "sysfan", "机箱")):
+        return "chassis"
+    if "sys" in text:
+        return "chassis"
+    return "other"
+
+
 def _display_label(raw: str, index: int) -> str:
-    text = (raw or "").strip()
-    low = text.lower()
-    if "cpu" in low or "processor" in low:
+    role = _role(raw)
+    if role == "cpu":
         return "CPU"
-    if any(key in low for key in ("chassis", "case", "sys", "system")):
+    if role == "chassis":
         return "机箱"
+    text = (raw or "").strip()
     return text or f"风扇{index}"
+
+
+def _channel_flags(pwm_path: Path | None, enable_path: Path | None) -> tuple[bool, bool]:
+    """PWM 可写才可调；自动/手动还要 pwm_enable 可写。缺一不可写时对应控件关闭。"""
+    pwm_ok = _writable(pwm_path)
+    enable_ok = _writable(enable_path)
+    return pwm_ok, pwm_ok and enable_ok
 
 
 def _read_int(path: Path) -> int | None:
@@ -91,6 +110,7 @@ def _scan() -> list[dict[str, Any]]:
                     chip = name_file.read_text(encoding="utf-8").strip()
                 except OSError:
                     chip = ""
+            seen_idx: set[int] = set()
             for fan_file in sorted(hw.glob("fan*_input")):
                 match = re.fullmatch(r"fan(\d+)_input", fan_file.name)
                 if not match:
@@ -99,40 +119,67 @@ def _scan() -> list[dict[str, Any]]:
                 rpm = _read_int(fan_file)
                 if rpm is None:
                     continue
-                label_file = hw / f"fan{index}_label"
-                raw_label = ""
-                if label_file.is_file():
-                    try:
-                        raw_label = label_file.read_text(encoding="utf-8").strip()
-                    except OSError:
-                        raw_label = ""
-                pwm_path = hw / f"pwm{index}"
-                enable_path = hw / f"pwm{index}_enable"
-                if not pwm_path.is_file():
-                    pwm_path = None
-                if not enable_path.is_file():
-                    enable_path = None
-                pwm = _read_int(pwm_path) if pwm_path else None
-                enable = _read_int(enable_path) if enable_path else None
-                fan_id = f"{hw.name}:fan{index}"
-                controllable = _writable(pwm_path) and _writable(enable_path)
-                found.append({
-                    "id": fan_id,
-                    "chip": chip or hw.name,
-                    "label": _display_label(raw_label, index),
-                    "rpm": rpm,
-                    "pwm": pwm,
-                    "pwm_percent": _percent(pwm),
-                    "mode": _mode_from_enable(enable),
-                    "controllable": controllable,
-                })
-                paths[fan_id] = {"pwm": pwm_path, "enable": enable_path}
+                seen_idx.add(index)
+                _append_channel(found, paths, hw, chip, index, rpm)
+            for pwm_file in sorted(hw.glob("pwm[0-9]*")):
+                match = re.fullmatch(r"pwm(\d+)", pwm_file.name)
+                if not match:
+                    continue
+                index = int(match.group(1))
+                if index in seen_idx or not _writable(pwm_file):
+                    continue
+                _append_channel(found, paths, hw, chip, index, None)
     if not found:
         found.extend(_from_psutil())
     with _LOCK:
         _PATHS.clear()
         _PATHS.update(paths)
     return found
+
+
+def _read_label(hw: Path, index: int) -> str:
+    label_file = hw / f"fan{index}_label"
+    if not label_file.is_file():
+        return ""
+    try:
+        return label_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _append_channel(
+    found: list[dict[str, Any]],
+    paths: dict[str, dict[str, Path | None]],
+    hw: Path,
+    chip: str,
+    index: int,
+    rpm: int | None,
+) -> None:
+    raw_label = _read_label(hw, index)
+    pwm_path = hw / f"pwm{index}"
+    enable_path = hw / f"pwm{index}_enable"
+    if not pwm_path.is_file():
+        pwm_path = None
+    if not enable_path.is_file():
+        enable_path = None
+    pwm = _read_int(pwm_path) if pwm_path else None
+    enable = _read_int(enable_path) if enable_path else None
+    controllable, mode_controllable = _channel_flags(pwm_path, enable_path)
+    fan_id = f"{hw.name}:fan{index}"
+    found.append({
+        "id": fan_id,
+        "chip": chip or hw.name,
+        "raw_label": raw_label,
+        "label": _display_label(raw_label, index),
+        "role": _role(raw_label),
+        "rpm": rpm,
+        "pwm": pwm,
+        "pwm_percent": _percent(pwm),
+        "mode": _mode_from_enable(enable),
+        "controllable": controllable,
+        "mode_controllable": mode_controllable,
+    })
+    paths[fan_id] = {"pwm": pwm_path, "enable": enable_path}
 
 
 def _from_psutil() -> list[dict[str, Any]]:
@@ -150,12 +197,15 @@ def _from_psutil() -> list[dict[str, Any]]:
             rows.append({
                 "id": f"psutil:{chip}:{index}",
                 "chip": str(chip),
+                "raw_label": str(label),
                 "label": _display_label(str(label), index),
+                "role": _role(str(label)),
                 "rpm": int(current),
                 "pwm": None,
                 "pwm_percent": None,
                 "mode": "unknown",
                 "controllable": False,
+                "mode_controllable": False,
             })
     return rows
 
@@ -166,22 +216,28 @@ def _mock_state() -> dict[str, Any]:
             {
                 "id": "mock:cpu",
                 "chip": "mock",
+                "raw_label": "cpu",
                 "label": "CPU",
+                "role": "cpu",
                 "rpm": 1956,
                 "pwm": 176,
                 "pwm_percent": 69,
                 "mode": "auto",
                 "controllable": False,
+                "mode_controllable": False,
             },
             {
                 "id": "mock:chassis",
                 "chip": "mock",
+                "raw_label": "chassis",
                 "label": "机箱",
+                "role": "chassis",
                 "rpm": 1106,
                 "pwm": 140,
                 "pwm_percent": 55,
                 "mode": "auto",
                 "controllable": False,
+                "mode_controllable": False,
             },
         ],
         "control": "readonly",
@@ -200,10 +256,11 @@ def _decorate(fans: list[dict[str, Any]]) -> dict[str, Any]:
     with _LOCK:
         forced = dict(_FORCED_READONLY)
     for fan in fans:
-        if fan["id"] in forced:
+        fan.setdefault("mode_controllable", False)
+        fan.setdefault("role", _role(str(fan.get("label") or "")))
+        if fan["id"] in forced or not cfg.control_enabled:
             fan["controllable"] = False
-        elif not cfg.control_enabled:
-            fan["controllable"] = False
+            fan["mode_controllable"] = False
     if not fans:
         return {"fans": [], "control": "off", "reason": ""}
     if not cfg.control_enabled:
@@ -215,17 +272,90 @@ def _decorate(fans: list[dict[str, Any]]) -> dict[str, Any]:
     return {"fans": fans, "control": "readonly", "reason": reason}
 
 
+def _mapping_rows() -> list[dict[str, Any]]:
+    try:
+        from app.main import store
+    except Exception:
+        return []
+    if store is None:
+        return []
+    try:
+        return store.list_fan_maps()
+    except Exception:
+        log.debug("fan map load failed", exc_info=True)
+        return []
+
+
+def _refresh_control(state: dict[str, Any]) -> dict[str, Any]:
+    """映射拿掉通道后，按剩下的风扇重算可调状态。模拟数据始终只读。"""
+    if state.get("reason") == "mock":
+        state["control"] = "readonly"
+        for fan in state.get("fans") or []:
+            fan["controllable"] = False
+            fan["mode_controllable"] = False
+        return state
+    fans = state.get("fans") or []
+    cfg = get_config().fans
+    if not fans:
+        state["control"] = "off"
+        state["reason"] = ""
+        return state
+    if not cfg.control_enabled:
+        for fan in fans:
+            fan["controllable"] = False
+            fan["mode_controllable"] = False
+        state["control"] = "readonly"
+        state["reason"] = "control_disabled"
+        return state
+    if any(fan.get("controllable") for fan in fans):
+        state["control"] = "ready"
+        state["reason"] = ""
+        return state
+    if state.get("reason") != "readback_mismatch":
+        state["reason"] = "not_writable"
+    state["control"] = "readonly"
+    return state
+
+
+def _with_mapping(state: dict[str, Any], *, drop_excluded: bool) -> dict[str, Any]:
+    state = dict(state)
+    state["fans"] = apply_fan_mapping(state.get("fans") or [], _mapping_rows(), drop_excluded=drop_excluded)
+    return _refresh_control(state)
+
+
 def collect_fans(mock_on_failure: bool = True, force_mock: bool = False) -> dict[str, Any]:
     if force_mock:
-        return _mock_state()
+        return _with_mapping(_mock_state(), drop_excluded=True)
     try:
         fans = _scan()
     except Exception as exc:
         log.warning("fan collect failed: %s", exc)
         if mock_on_failure:
-            return _mock_state()
+            return _with_mapping(_mock_state(), drop_excluded=True)
         raise
-    return _decorate(fans)
+    return _with_mapping(_decorate(fans), drop_excluded=True)
+
+
+def fans_for_calibration() -> list[dict[str, Any]]:
+    """设置页要看到被排除的通道，所以这里不丢掉它们。"""
+    from app.state import get_latest
+
+    latest = get_latest()
+    if latest.get("host_mock"):
+        state = _mock_state()
+    else:
+        try:
+            fans = _scan()
+        except Exception:
+            log.warning("fan calibration scan failed", exc_info=True)
+            if get_config().collect.mock_on_failure:
+                state = _mock_state()
+            else:
+                state = _decorate([])
+        else:
+            state = _decorate(fans)
+    mapped = _with_mapping(state, drop_excluded=False)
+    return mapped.get("fans") or []
 
 
 def public_state() -> dict[str, Any]:
@@ -247,15 +377,25 @@ def _require_known(fan_id: str) -> dict[str, Path | None]:
     return paths
 
 
-def _ensure_can_write(fan_id: str) -> dict[str, Path | None]:
+def _ensure_pwm(fan_id: str) -> dict[str, Path | None]:
     cfg = get_config().fans
     if not cfg.control_enabled:
         raise FanRejected("control_disabled", "调速未开启")
+    for row in _mapping_rows():
+        if row.get("excluded") and row.get("fan_id") == fan_id:
+            raise FanRejected("not_writable", "这路风扇已从展示中排除")
     with _LOCK:
         if fan_id in _FORCED_READONLY:
             raise FanRejected("readback_mismatch", "写入后被系统改回，已停用调速")
     paths = _require_known(fan_id)
-    if not _writable(paths.get("pwm")) or not _writable(paths.get("enable")):
+    if not _writable(paths.get("pwm")):
+        raise FanRejected("not_writable", "系统未提供可写转速")
+    return paths
+
+
+def _ensure_mode(fan_id: str) -> dict[str, Path | None]:
+    paths = _ensure_pwm(fan_id)
+    if not _writable(paths.get("enable")):
         raise FanRejected("not_writable", "系统未提供可写转速")
     return paths
 
@@ -281,34 +421,47 @@ def _force_readonly(fan_id: str) -> None:
 
 
 def _apply_many(specs: list[tuple[str, str, int | None]]) -> None:
-    """先写完全部目标，再统一等待约 2 秒读回。任一不一致则撤销并标只读。"""
+    """先写完全部目标，再统一等待约 2 秒读回。任一不一致则撤销并标只读。
+
+    只有 pwm 可写、enable 不可写时，只写占空比，不假装能切换自动/手动。
+    """
     prepared: list[dict[str, Any]] = []
     for fan_id, mode, percent in specs:
-        paths = _ensure_can_write(fan_id)
-        enable_path = paths["enable"]
-        pwm_path = paths["pwm"]
-        assert enable_path is not None and pwm_path is not None
-        target_enable = 2 if mode == "auto" and percent is None else 1
+        if percent is None:
+            paths = _ensure_mode(fan_id)
+        else:
+            paths = _ensure_pwm(fan_id)
+        enable_path = paths.get("enable")
+        pwm_path = paths.get("pwm")
+        assert pwm_path is not None
+        write_enable = enable_path is not None and _writable(enable_path)
+        if percent is None and not write_enable:
+            raise FanRejected("not_writable", "系统未提供可写转速")
+        target_enable = None
+        if write_enable:
+            target_enable = 2 if mode == "auto" and percent is None else 1
         target_pwm = _pwm_from_percent(percent) if percent is not None else None
         prepared.append({
             "id": fan_id,
-            "enable_path": enable_path,
+            "enable_path": enable_path if write_enable else None,
             "pwm_path": pwm_path,
-            "old_enable": _read_int(enable_path),
+            "old_enable": _read_int(enable_path) if write_enable and enable_path is not None else None,
             "old_pwm": _read_int(pwm_path),
             "target_enable": target_enable,
             "target_pwm": target_pwm,
         })
     for item in prepared:
-        _write_text(item["enable_path"], str(item["target_enable"]))
+        if item["target_enable"] is not None and item["enable_path"] is not None:
+            _write_text(item["enable_path"], str(item["target_enable"]))
         if item["target_pwm"] is not None:
             _write_text(item["pwm_path"], str(item["target_pwm"]))
     time.sleep(READBACK_SEC)
     failed = False
     for item in prepared:
-        now_enable = _read_int(item["enable_path"])
+        enable_ok = True
+        if item["target_enable"] is not None and item["enable_path"] is not None:
+            enable_ok = _read_int(item["enable_path"]) == item["target_enable"]
         now_pwm = _read_int(item["pwm_path"])
-        enable_ok = now_enable == item["target_enable"]
         target_pwm = item["target_pwm"]
         pwm_ok = True if target_pwm is None else (
             now_pwm is not None and abs(now_pwm - target_pwm) <= PWM_TOLERANCE
@@ -316,7 +469,7 @@ def _apply_many(specs: list[tuple[str, str, int | None]]) -> None:
         if enable_ok and pwm_ok:
             continue
         failed = True
-        if item["old_enable"] is not None:
+        if item["enable_path"] is not None and item["old_enable"] is not None:
             try:
                 item["enable_path"].write_text(str(item["old_enable"]), encoding="utf-8")
             except OSError:

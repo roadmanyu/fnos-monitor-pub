@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ServerCfg(BaseModel):
@@ -22,7 +22,7 @@ class AuthCfg(BaseModel):
 
 
 class CollectCfg(BaseModel):
-    interval_sec: int = 2
+    interval_sec: int = 1
     fs_interval_sec: int = 60
     retention_days: int = 7
     mock_on_failure: bool = True
@@ -30,6 +30,8 @@ class CollectCfg(BaseModel):
     filesystem_exclude_prefixes: list[str] = Field(default_factory=list)
     # 0 = 磁盘吞吐条按近期峰值归一；大于 0 时用该字节/秒作为满格
     disk_bps_cap: float = 0
+    # 盘符集合变化后，需连续稳定这么多秒才重新跑 SMART。0 表示立刻接受。
+    disk_plug_debounce_sec: int = 8
 
 
 class PowerCfg(BaseModel):
@@ -80,8 +82,53 @@ class AlertsCfg(BaseModel):
     rules: AlertRulesCfg = Field(default_factory=AlertRulesCfg)
 
 
+_CAPACITY_UNITS = {"gib", "gb", "label"}
+
+
+class CapacityCfg(BaseModel):
+    # gib：1024，显示 GiB/TiB。gb：1000，显示 GB/TB。label：厂商标称，没有则退回 GiB。
+    unit: str = "gib"
+    decimals: int = 1
+
+    @field_validator("unit", mode="before")
+    @classmethod
+    def _unit(cls, value: object) -> str:
+        text = str(value or "gib").strip().lower()
+        aliases = {
+            "1024": "gib",
+            "1000": "gb",
+            "vendor": "label",
+            "advertised": "label",
+            "标签容量": "label",
+        }
+        text = aliases.get(text, text)
+        if text not in _CAPACITY_UNITS:
+            return "gib"
+        return text
+
+    @field_validator("decimals", mode="before")
+    @classmethod
+    def _decimals(cls, value: object) -> int:
+        try:
+            number = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 1
+        return max(0, min(3, number))
+
+
+class DisplayRefreshCfg(BaseModel):
+    # 总览 / 主机指标的界面刷新。不额外读盘。
+    overview_sec: int = 1
+    # 存储池、文件系统在界面上更换缓存的周期。采集仍按 collect.fs_interval_sec。
+    disk_sec: int = 60
+    # SMART 摘要在界面上更换缓存的周期。采集仍按 smart.interval_sec。
+    smart_sec: int = 60
+
+
 class DisplayCfg(BaseModel):
     timezone: str = "Asia/Shanghai"
+    capacity: CapacityCfg = Field(default_factory=CapacityCfg)
+    refresh: DisplayRefreshCfg = Field(default_factory=DisplayRefreshCfg)
 
 
 class AppConfig(BaseModel):

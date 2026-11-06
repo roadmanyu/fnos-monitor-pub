@@ -3,6 +3,7 @@ import socket
 from fastapi import APIRouter, Depends
 
 from app.api.deps import require_user
+from app.calibration import effective_capacity
 from app.config import get_config
 from app.state import get_latest
 from app.version import app_version
@@ -17,6 +18,8 @@ def health():
 
 @router.get("/meta")
 def meta(_user: str = Depends(require_user)):
+    from app.main import store
+
     cfg = get_config()
     latest = get_latest()
     try:
@@ -29,9 +32,20 @@ def meta(_user: str = Depends(require_user)):
         "hostname": hostname,
         "last_collect_ts": latest.get("ts"),
         "collect_interval_sec": cfg.collect.interval_sec,
+        "fs_interval_sec": cfg.collect.fs_interval_sec,
+        "smart_interval_sec": cfg.smart.interval_sec,
+        "disk_plug_debounce_sec": cfg.collect.disk_plug_debounce_sec,
+        "refresh": {
+            "overview_sec": cfg.display.refresh.overview_sec,
+            "disk_sec": cfg.display.refresh.disk_sec,
+            "smart_sec": cfg.display.refresh.smart_sec,
+        },
+        "auth_username": cfg.auth.username,
+        "fan_min_pwm_percent": cfg.fans.min_pwm_percent,
         "power_rated_watts": cfg.power.rated_watts,
         "disk_bps_cap": cfg.collect.disk_bps_cap,
         "timezone_display": cfg.display.timezone,
+        "capacity_display": effective_capacity(cfg, store),
         "mock_mode": bool(latest.get("host_mock"))
         or any(f.get("mock") for f in (latest.get("filesystems") or []))
         or any(d.get("mock") for d in (latest.get("disks_smart_summary") or [])),
