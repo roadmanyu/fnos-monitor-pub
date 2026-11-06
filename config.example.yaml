@@ -10,8 +10,9 @@ auth:
   jwt_expire_sec: 86400
 
 collect:
-  # 主机、Docker、风扇采集周期，也是仪表盘轮询周期。界面显示「每 N 秒」。
+  # 主机、Docker、风扇的采样周期。仪表盘快刷新见 display.refresh.overview_sec（默认同样是 1 秒）。
   interval_sec: 1
+  # 文件系统 / 存储池容量的读盘周期。界面更换这份缓存见 display.refresh.disk_sec。
   fs_interval_sec: 60
   retention_days: 7
   # true：无 Docker/SMART 时用模拟数据，便于开发机跑通
@@ -25,9 +26,13 @@ collect:
     - "/snap"
   # 磁盘吞吐条满格（字节/秒）。0 表示按近期采样峰值归一。
   disk_bps_cap: 0
+  # 硬盘插拔去抖（秒）。盘符集合变化后，连续稳定这么久才重新跑 SMART。
+  # 去抖窗口内不调用 smartctl。0 表示立刻接受插拔。网页「高级」可覆盖，写入 SQLite。
+  disk_plug_debounce_sec: 8
 
 smart:
   enabled: true
+  # SMART / smartctl 周期。比总览慢，避免频繁读盘。网页「高级」可覆盖。
   interval_sec: 900
   devices: []
   skip_standby: true
@@ -74,3 +79,10 @@ display:
   capacity:
     unit: gib
     decimals: 1
+  # 界面分级刷新。总览快，磁盘和 SMART 慢，只是更换已经采到的缓存，不额外读盘。
+  # 真正读盘的是 collect.fs_interval_sec 和 smart.interval_sec。
+  # 网页「高级」保存后写入 SQLite，优先于这里。
+  refresh:
+    overview_sec: 1
+    disk_sec: 60
+    smart_sec: 60

@@ -14,6 +14,7 @@ from app.collectors import docker_col
 from app.collectors import fans as fan_col
 from app.collectors import host as host_col
 from app.collectors import smart as smart_col
+from app.collectors.presence import DiskPresenceDebounce
 from app.config import AppConfig
 from app.state import set_latest
 from app.storage.sqlite_store import Store
@@ -33,6 +34,7 @@ class CollectorLoop:
         self._last_smart_mono = 0.0
         self._smart_cache: list[dict[str, Any]] = []
         self._full_smart: dict[str, dict] = {}
+        self._presence = DiskPresenceDebounce()
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -80,10 +82,7 @@ class CollectorLoop:
             containers = docker_col.collect_containers(mock_on_failure=mock)
 
         now_m = time.monotonic()
-        if cfg.smart.enabled and (
-            not self._smart_cache
-            or now_m - self._last_smart_mono >= cfg.smart.interval_sec
-        ):
+        if cfg.smart.enabled and self._smart_due(cfg, now_m):
             smart_list = smart_col.collect_smart(
                 devices=cfg.smart.devices or None,
                 skip_standby=cfg.smart.skip_standby,
@@ -176,6 +175,23 @@ class CollectorLoop:
         alert_view["disks_smart_summary"] = calibrated
         evaluate(self.store, cfg, alert_view)
         log.debug("collected at %s", ts)
+
+    def _smart_due(self, cfg: AppConfig, now_m: float) -> bool:
+        """盘符没变时按 SMART 周期采集；插拔去抖窗口内不读盘。"""
+        from pathlib import Path
+
+        paths = smart_col.discover_devices(cfg.smart.devices or None)
+        ids = [Path(path).name for path in paths if Path(path).name]
+        if not ids and cfg.collect.mock_on_failure:
+            ids = ["sda"]
+        action = self._presence.consider(ids, now_m, float(cfg.collect.disk_plug_debounce_sec))
+        if action == "pending":
+            return False
+        if action == "accept":
+            return True
+        return (not self._smart_cache) or (
+            now_m - self._last_smart_mono >= cfg.smart.interval_sec
+        )
 
     def get_smart_detail(self, disk_id: str) -> dict | None:
         return self._full_smart.get(disk_id)

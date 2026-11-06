@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f3f5f8" />
     <title>飞牛监控</title>
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('fnos_theme') || 'auto'
+          if (pref !== 'light' && pref !== 'dark' && pref !== 'auto') pref = 'auto'
+          var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+          var resolved = pref === 'auto' ? (dark ? 'dark' : 'light') : pref
+          document.documentElement.setAttribute('data-theme', resolved)
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

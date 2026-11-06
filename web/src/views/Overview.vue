@@ -7,6 +7,19 @@ import Alerts from './Alerts.vue'
 import Disks from './Disks.vue'
 import Docker from './Docker.vue'
 import { formatCapacity } from '../utils/capacity'
+import { shouldRefresh } from '../utils/refreshGate'
+import {
+  Activity,
+  Bell,
+  Container,
+  Cpu,
+  Database,
+  Fan,
+  Gauge,
+  HardDrive,
+  Monitor,
+  Network
+} from 'lucide-vue-next'
 import {
   clampPct,
   formatBytes,
@@ -40,12 +53,49 @@ let clock
 
 const tz = computed(() => meta.value?.timezone_display || 'Asia/Shanghai')
 const host = computed(() => snap.value?.host || {})
+const heldFs = ref(null)
+const heldSmart = ref(null)
+let fsAt = null
+let smartAt = null
+
+function positiveSec(value, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+const overviewSec = computed(() => positiveSec(meta.value?.refresh?.overview_sec, 1))
+const diskRefreshSec = computed(() => positiveSec(meta.value?.refresh?.disk_sec, 60))
+const smartRefreshSec = computed(() => positiveSec(meta.value?.refresh?.smart_sec, 60))
+
+function holdSlow(snapshot, force = false) {
+  const nowMs = Date.now()
+  const incomingFs = snapshot?.filesystems || []
+  const incomingSmart = snapshot?.disks_smart_summary || []
+  const fsEmpty = !heldFs.value || heldFs.value.length === 0
+  const smartEmpty = !heldSmart.value || heldSmart.value.length === 0
+  if (
+    shouldRefresh(fsAt, nowMs, diskRefreshSec.value * 1000, force || heldFs.value == null)
+    || (fsEmpty && incomingFs.length)
+  ) {
+    heldFs.value = incomingFs
+    fsAt = nowMs
+  }
+  if (
+    shouldRefresh(smartAt, nowMs, smartRefreshSec.value * 1000, force || heldSmart.value == null)
+    || (smartEmpty && incomingSmart.length)
+  ) {
+    heldSmart.value = incomingSmart
+    smartAt = nowMs
+  }
+}
+
 const filesystems = computed(() => {
-  return [...(snap.value?.filesystems || [])].sort(
+  const raw = heldFs.value ?? snap.value?.filesystems ?? []
+  return [...raw].sort(
     (a, b) => (Number(b.used_pct) || 0) - (Number(a.used_pct) || 0)
   )
 })
-const disks = computed(() => (snap.value?.disks_smart_summary || []).filter((d) => d.visible !== false))
+const disks = computed(() => (heldSmart.value ?? snap.value?.disks_smart_summary ?? []).filter((d) => d.visible !== false))
 const capacityDisplay = computed(() => meta.value?.capacity_display || { unit: 'gib', decimals: 1 })
 
 function capacityText(bytes, labelBytes) {
@@ -317,7 +367,7 @@ const collectStale = computed(() => {
   return ageSec.value > intervalSec.value * 2
 })
 
-const cadenceText = computed(() => `每 ${intervalSec.value} 秒`)
+const cadenceText = computed(() => `每 ${overviewSec.value} 秒`)
 
 const DISK_PAGE_SIZE = 6
 const diskPage = ref(0)
@@ -446,6 +496,7 @@ async function load() {
     ])
     meta.value = m
     snap.value = s
+    holdSlow(s)
     alerts.value = a
     rememberLocalName(m?.hostname)
     err.value = ''
@@ -574,6 +625,10 @@ function resetView() {
   containers.value = []
   hist.value = { cpu: [], mem: [], load: [], temp: [], up: [], down: [] }
   diskPage.value = 0
+  heldFs.value = null
+  heldSmart.value = null
+  fsAt = null
+  smartAt = null
 }
 
 async function openDrawer(id) {
@@ -601,7 +656,7 @@ function onDrawerToggle(e) {
 }
 
 function armPoll() {
-  const ms = intervalSec.value * 1000
+  const ms = overviewSec.value * 1000
   if (poll && pollDelay === ms) return
   pollDelay = ms
   clearInterval(poll)
@@ -631,6 +686,9 @@ watch(() => nas.activeId, () => {
 })
 watch(() => route.hash, (hash) => {
   if (hash) openDrawer(hash.slice(1))
+})
+watch(diskOpen, (open) => {
+  if (open && snap.value) holdSlow(snap.value, true)
 })
 watch(fanItems, (items) => {
   const floor = minPwm.value
@@ -789,7 +847,7 @@ function trendDomain(key, values) {
       <section class="card mod span-12 id-card">
         <header class="mod-head">
           <span class="mid">M01</span>
-          <span class="mod-title">系统</span>
+          <span class="mod-title"><Monitor :size="15" /> 系统</span>
           <span class="pill head-pill push" :class="hostStatus.cls">
             <i class="dot"></i>{{ hostStatus.text }}
           </span>
@@ -839,7 +897,7 @@ function trendDomain(key, values) {
       <section class="card mod span-12 res-card">
         <header class="mod-head">
           <span class="mid">M02</span>
-          <span class="mod-title">资源</span>
+          <span class="mod-title"><Gauge :size="15" /> 资源</span>
           <span v-if="loadState" class="pill head-pill push" :class="loadState.cls">
             <i class="dot"></i>{{ loadState.text }}
           </span>
@@ -897,7 +955,7 @@ function trendDomain(key, values) {
       <section class="card mod span-12 trend-card">
         <header class="mod-head">
           <span class="mid">M03</span>
-          <span class="mod-title">趋势</span>
+          <span class="mod-title"><Activity :size="15" /> 趋势</span>
           <span class="pill muted head-pill push">近 3 分钟</span>
         </header>
         <div v-if="trend.has" class="trend-plot">
@@ -906,9 +964,9 @@ function trendDomain(key, values) {
             <span>0</span>
           </div>
           <svg viewBox="0 0 640 240" class="trend" preserveAspectRatio="none">
-            <line x1="0" y1="8" x2="640" y2="8" stroke="#eef1f4" />
-            <line x1="0" y1="120" x2="640" y2="120" stroke="#eef1f4" />
-            <line x1="0" y1="232" x2="640" y2="232" stroke="#eef1f4" />
+            <line x1="0" y1="8" x2="640" y2="8" stroke="var(--track)" />
+            <line x1="0" y1="120" x2="640" y2="120" stroke="var(--track)" />
+            <line x1="0" y1="232" x2="640" y2="232" stroke="var(--track)" />
             <path v-if="trend.area" :d="trend.area" :fill="trend.areaColor" fill-opacity="0.16" stroke="none" />
             <path
               v-for="p in trend.paths"
@@ -948,7 +1006,7 @@ function trendDomain(key, values) {
       <section class="card mod span-3 net-card">
         <header class="mod-head">
           <span class="mid">M04</span>
-          <span class="mod-title">网络</span>
+          <span class="mod-title"><Network :size="15" /> 网络</span>
           <span v-if="netIface" class="iface-name push">{{ netIface }}</span>
           <span v-if="netSpeed" class="pill ok head-pill" :class="{ push: !netIface }">{{ netSpeed }}</span>
           <span v-if="netPace" class="pill head-pill" :class="[netPace === '传输中' ? 'ok' : 'muted', { push: !netIface && !netSpeed }]">
@@ -981,7 +1039,7 @@ function trendDomain(key, values) {
       <section class="card mod span-4 cpu-card">
         <header class="mod-head">
           <span class="mid">M05</span>
-          <span class="mod-title">CPU</span>
+          <span class="mod-title"><Cpu :size="15" /> CPU</span>
           <div class="head-right">
             <span v-if="host.cpu_pct != null" class="cpu-sum">整机 {{ formatPct(host.cpu_pct, 0) }}%</span>
             <button v-if="otherTemps.length" type="button" class="fold" @click="tempsOpen = true">
@@ -1000,11 +1058,11 @@ function trendDomain(key, values) {
             <div class="ring-wrap">
               <svg viewBox="0 0 120 120" class="core-svg" :aria-label="'核 ' + i">
                 <g fill="none" stroke-linecap="round" transform="rotate(-90 60 60)">
-                  <circle cx="60" cy="60" r="48" stroke="#f6e7da" stroke-width="9" />
+                  <circle cx="60" cy="60" r="48" stroke="var(--ring-temp-track)" stroke-width="9" />
                   <circle cx="60" cy="60" r="48" stroke="#f08a3a" stroke-width="9" :stroke-dasharray="coreArcs(core).temp.dash" :stroke-dashoffset="coreArcs(core).temp.offset" />
-                  <circle cx="60" cy="60" r="36" stroke="#e4ebf8" stroke-width="9" />
+                  <circle cx="60" cy="60" r="36" stroke="var(--ring-use-track)" stroke-width="9" />
                   <circle cx="60" cy="60" r="36" stroke="#5b8def" stroke-width="9" :stroke-dasharray="coreArcs(core).use.dash" :stroke-dashoffset="coreArcs(core).use.offset" />
-                  <circle cx="60" cy="60" r="24" stroke="#e3f6f4" stroke-width="9" />
+                  <circle cx="60" cy="60" r="24" stroke="var(--ring-freq-track)" stroke-width="9" />
                   <circle cx="60" cy="60" r="24" stroke="#2ec9c0" stroke-width="9" :stroke-dasharray="coreArcs(core).freq.dash" :stroke-dashoffset="coreArcs(core).freq.offset" />
                 </g>
               </svg>
@@ -1023,7 +1081,7 @@ function trendDomain(key, values) {
       <section class="card mod span-3 fan-card">
         <header class="mod-head">
           <span class="mid">M06</span>
-          <span class="mod-title">风扇</span>
+          <span class="mod-title"><Fan :size="15" /> 风扇</span>
           <span class="pill head-pill push" :class="fanPillClass">
             <i class="dot"></i>{{ fanPill }}
           </span>
@@ -1082,7 +1140,7 @@ function trendDomain(key, values) {
       <section class="card mod span-7 docker-card">
         <header class="mod-head">
           <span class="mid">M07</span>
-          <span class="mod-title">Docker</span>
+          <span class="mod-title"><Container :size="15" /> Docker</span>
           <div class="top-switch push">
             <button type="button" class="chip" :class="{ on: topMetric === 'cpu' }" @click="topMetric = 'cpu'">按 CPU</button>
             <button type="button" class="chip" :class="{ on: topMetric === 'mem' }" @click="topMetric = 'mem'">按内存</button>
@@ -1133,7 +1191,7 @@ function trendDomain(key, values) {
       <section class="card mod span-5 pool-card">
         <header class="mod-head">
           <span class="mid">M08</span>
-          <span class="mod-title">存储池</span>
+          <span class="mod-title"><Database :size="15" /> 存储池</span>
           <span class="io-note push">{{ diskIoText || '读写暂无数据' }}</span>
           <a class="mod-link" href="#disk-detail" @click.prevent="openDrawer('disk-detail')">磁盘详情</a>
         </header>
@@ -1155,7 +1213,7 @@ function trendDomain(key, values) {
       <section class="card mod span-12 disk-card">
         <header class="mod-head">
           <span class="mid">M09</span>
-          <span class="mod-title">硬盘</span>
+          <span class="mod-title"><HardDrive :size="15" /> 硬盘</span>
           <span class="health-sum push">
             OK {{ diskRollup.ok }}
             · FAIL <em :class="{ bad: diskRollup.fail > 0 }">{{ diskRollup.fail }}</em>
@@ -1203,7 +1261,7 @@ function trendDomain(key, values) {
         </div>
         <div class="alert-bar">
         <header class="mod-head">
-          <span class="mod-title">最近告警</span>
+          <span class="mod-title"><Bell :size="15" /> 最近告警</span>
           <a class="mod-link push" href="#alert-detail" @click.prevent="openDrawer('alert-detail')">全部</a>
         </header>
         <div v-if="recentAlerts.length" class="alert-list">
@@ -1290,12 +1348,19 @@ function trendDomain(key, values) {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: #8a7cc4;
+  color: var(--mid);
 }
 
 .mod-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+.mod-title :deep(svg) {
+  flex: none;
+  color: var(--accent);
 }
 
 .push { margin-left: auto; }
@@ -1335,7 +1400,7 @@ function trendDomain(key, values) {
 }
 .id-host { color: var(--muted); font-size: 1.05rem; }
 .id-fresh { color: var(--muted); font-size: 1.2rem; font-variant-numeric: tabular-nums; }
-.id-fresh.stale { color: #b45309; font-weight: 700; }
+.id-fresh.stale { color: var(--warn); font-weight: 700; }
 .id-clock {
   display: flex;
   justify-content: space-between;
@@ -1344,7 +1409,7 @@ function trendDomain(key, values) {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
-  color: #607086;
+  color: var(--soft);
   font-size: 1.05rem;
   font-variant-numeric: tabular-nums;
 }
@@ -1364,7 +1429,7 @@ function trendDomain(key, values) {
 .id-card .fact b.clip { white-space: nowrap; }
 .id-ver {
   margin-top: 8px;
-  color: #9aa3b2;
+  color: var(--faint);
   font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
 }
@@ -1387,7 +1452,7 @@ function trendDomain(key, values) {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  color: #607086;
+  color: var(--soft);
   font-size: 0.92rem;
 }
 
@@ -1409,7 +1474,7 @@ function trendDomain(key, values) {
 .k {
   font-size: 0.68rem;
   letter-spacing: 0.08em;
-  color: #9aa3b2;
+  color: var(--faint);
   font-weight: 700;
 }
 
@@ -1427,7 +1492,7 @@ function trendDomain(key, values) {
   gap: 12px;
   align-items: baseline;
 }
-.fact span { color: #9aa3b2; font-size: 0.75rem; flex: none; }
+.fact span { color: var(--faint); font-size: 0.75rem; flex: none; }
 .fact b {
   font-weight: 650;
   font-variant-numeric: tabular-nums;
@@ -1443,7 +1508,7 @@ function trendDomain(key, values) {
   gap: 8px;
   font-size: 0.78rem;
   letter-spacing: 0.06em;
-  color: #8b95a5;
+  color: var(--faint);
   font-weight: 700;
 }
 .metric-top b {
@@ -1470,7 +1535,7 @@ function trendDomain(key, values) {
   height: 12px;
   border-radius: 7px;
   position: relative;
-  background: repeating-linear-gradient(90deg, #e3e8ee 0 8px, transparent 8px 11px);
+  background: repeating-linear-gradient(90deg, var(--seg-track) 0 8px, transparent 8px 11px);
   overflow: hidden;
 }
 .seg::after {
@@ -1506,7 +1571,7 @@ function trendDomain(key, values) {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  color: #8b95a5;
+  color: var(--faint);
   font-size: 1rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -1519,21 +1584,21 @@ function trendDomain(key, values) {
   display: grid;
   place-items: center;
   border-radius: 14px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.8rem;
   font-weight: 700;
 }
 .x-axis {
   display: flex;
   justify-content: space-between;
-  color: #6d7886;
+  color: var(--muted);
   font-size: 1rem;
   font-weight: 700;
 }
 .trend-caption {
   margin: 0;
-  color: #3d4754;
+  color: var(--ink);
   font-size: 1.15rem;
   font-weight: 700;
 }
@@ -1542,7 +1607,7 @@ function trendDomain(key, values) {
   flex-wrap: wrap;
   gap: 12px;
   font-size: 0.8rem;
-  color: #607086;
+  color: var(--soft);
   font-variant-numeric: tabular-nums;
 }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -1555,8 +1620,8 @@ function trendDomain(key, values) {
 .swatch.down { background: #8b7cf6; }
 .chip {
   border: 0;
-  background: #f4f6f8;
-  color: #607086;
+  background: var(--track);
+  color: var(--soft);
   border-radius: 999px;
   padding: 4px 10px;
   font: inherit;
@@ -1572,10 +1637,10 @@ function trendDomain(key, values) {
   padding: 8px 16px;
   font-size: 1.05rem;
 }
-.chip.on { background: #e7f6f4; color: var(--teal-ink); }
+.chip.on { background: var(--teal-soft); color: var(--teal-ink); }
 .trend-card .swatch { width: 22px; height: 6px; }
 .age.stale {
-  color: #b45309;
+  color: var(--warn);
   background: var(--warn-bg);
   border-radius: 999px;
   padding: 2px 8px;
@@ -1589,15 +1654,15 @@ function trendDomain(key, values) {
   height: 10px;
   border-radius: 50%;
 }
-.net-card .k { font-size: 0.92rem; color: #607086; }
+.net-card .k { font-size: 0.92rem; color: var(--soft); }
 .net-empty {
   flex: 1;
   min-height: 64px;
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.25rem;
   font-weight: 700;
 }
@@ -1619,9 +1684,9 @@ function trendDomain(key, values) {
   min-height: 88px;
   border-radius: 14px;
   background:
-    linear-gradient(#f7f8fb, #f7f8fb) padding-box,
+    linear-gradient(var(--chip), var(--chip)) padding-box,
     repeating-linear-gradient(90deg, transparent, transparent 12px, rgba(140, 150, 170, 0.18) 12px, rgba(140, 150, 170, 0.18) 13px);
-  color: #9aa3b2;
+  color: var(--faint);
   font-size: 0.9rem;
 }
 .empty.grow { min-height: 120px; }
@@ -1672,7 +1737,7 @@ function trendDomain(key, values) {
   place-items: center;
   font-size: 0.72rem;
   font-weight: 700;
-  color: #8b95a5;
+  color: var(--faint);
   pointer-events: none;
 }
 .core-line {
@@ -1690,11 +1755,11 @@ function trendDomain(key, values) {
 .core-line .use { color: #3d6fd8; }
 .core-line .hz { color: #0f8f88; }
 .core-line.deg { color: #e07a2f; font-size: clamp(13px, 20cqw, 18px); }
-.core-line.deg.miss { color: #9aa3b2; }
+.core-line.deg.miss { color: var(--faint); }
 .fold {
   border: 0;
-  background: #f4f6f8;
-  color: #607086;
+  background: var(--track);
+  color: var(--soft);
   font: inherit;
   font-size: 0.75rem;
   font-weight: 700;
@@ -1707,7 +1772,7 @@ function trendDomain(key, values) {
   position: fixed;
   inset: 0;
   z-index: 70;
-  background: rgba(28, 36, 48, 0.38);
+  background: var(--overlay);
   display: grid;
   place-items: center;
   padding: 24px;
@@ -1716,7 +1781,7 @@ function trendDomain(key, values) {
   width: min(420px, 100%);
   max-height: min(70vh, 480px);
   overflow: auto;
-  background: #fff;
+  background: var(--card);
   border-radius: 16px;
   padding: 16px 18px 18px;
   box-shadow: var(--shadow);
@@ -1784,7 +1849,7 @@ function trendDomain(key, values) {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 10px;
-  color: #4b5568;
+  color: var(--soft);
   font-size: 0.78rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -1794,14 +1859,14 @@ function trendDomain(key, values) {
 .fan-seg.off { opacity: 0.55; filter: grayscale(1); }
 .fan-seg.off button,
 .fan-seg button:disabled {
-  background: #eceff3;
-  color: #9aa3b2;
+  background: var(--track);
+  color: var(--faint);
 }
 .fan-seg button {
   flex: 1;
   border: 0;
-  background: #f4f6f8;
-  color: #607086;
+  background: var(--track);
+  color: var(--soft);
   border-radius: 999px;
   font: inherit;
   font-size: 0.75rem;
@@ -1809,7 +1874,7 @@ function trendDomain(key, values) {
   min-height: 28px;
   cursor: pointer;
 }
-.fan-seg button.on { background: #efeaff; color: #5b46c4; }
+.fan-seg button.on { background: var(--accent-soft); color: var(--accent); }
 .fan-seg button:disabled { cursor: not-allowed; }
 .fan-line {
   display: grid;
@@ -1833,14 +1898,14 @@ function trendDomain(key, values) {
   gap: 6px;
   font-size: 0.75rem;
   font-weight: 700;
-  color: #607086;
+  color: var(--soft);
   min-width: 0;
 }
 .fan-pwm input { flex: 1; min-width: 0; accent-color: #6d5bd0; }
-.fan-pwm input:disabled { accent-color: #c5cad3; }
+.fan-pwm input:disabled { accent-color: var(--faint); }
 .fan-pwm b { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 2.6em; text-align: right; }
-.fan-lock { color: #6d7886; font-weight: 800; }
-.fan-note { margin: 0; font-size: 0.72rem; color: #b45309; line-height: 1.3; }
+.fan-lock { color: var(--muted); font-weight: 800; }
+.fan-note { margin: 0; font-size: 0.72rem; color: var(--warn); line-height: 1.3; }
 .iface-name {
   max-width: 7.2em;
   overflow: hidden;
@@ -1848,7 +1913,7 @@ function trendDomain(key, values) {
   white-space: nowrap;
   font-size: 0.75rem;
   font-weight: 800;
-  color: #5b46c4;
+  color: var(--accent);
 }
 .health-row {
   display: grid;
@@ -1856,7 +1921,7 @@ function trendDomain(key, values) {
   gap: 10px;
 }
 .health-cell {
-  background: #f6f8fa;
+  background: var(--track);
   border-radius: 14px;
   padding: 12px 14px;
   color: inherit;
@@ -1872,7 +1937,7 @@ function trendDomain(key, values) {
 .health-cell.ok { background: var(--ok-bg); color: var(--ok); }
 .health-cell.warn { background: var(--warn-bg); color: var(--warn); }
 .health-cell.crit { background: var(--crit-bg); color: var(--crit); }
-.health-cell.muted { background: #eef1f4; color: var(--muted); }
+.health-cell.muted { background: var(--track); color: var(--muted); }
 .docker-body {
   flex: 1;
   min-height: 0;
@@ -1898,7 +1963,7 @@ function trendDomain(key, values) {
   overflow: hidden;
 }
 .sum {
-  background: #f6f8fa;
+  background: var(--track);
   border-radius: 14px;
   padding: 6px 10px;
 }
@@ -1918,13 +1983,13 @@ function trendDomain(key, values) {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.25rem;
   font-weight: 700;
 }
 .health-sum {
-  color: #607086;
+  color: var(--soft);
   font-size: 0.78rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -1953,21 +2018,21 @@ function trendDomain(key, values) {
   flex: none;
   line-height: 1.35;
 }
-.ctr.hot { background: #fff6e8; }
+.ctr.hot { background: var(--hot-bg); }
 .rank {
   font-size: 0.72rem;
   font-weight: 800;
-  color: #9aa3b2;
+  color: var(--faint);
   text-align: center;
 }
 .ctr-dot {
   width: 8px;
   height: 8px;
   border-radius: 99px;
-  background: #d5dbe3;
+  background: var(--meter);
 }
-.ctr-head { color: #9aa3b2; font-size: 0.68rem; letter-spacing: 0.06em; font-weight: 700; }
-.ctr-head .stat { color: #9aa3b2; }
+.ctr-head { color: var(--faint); font-size: 0.68rem; letter-spacing: 0.06em; font-weight: 700; }
+.ctr-head .stat { color: var(--faint); }
 .ctr-dot.run { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16); }
 .ctr-dot.stop { background: #fb7185; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1991,7 +2056,7 @@ function trendDomain(key, values) {
 .stat {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: #4b5568;
+  color: var(--soft);
   font-size: 0.84rem;
 }
 
@@ -2029,8 +2094,8 @@ function trendDomain(key, values) {
   white-space: nowrap;
   padding: 2px 8px;
   border-radius: 999px;
-  background: #efeaff;
-  color: #5b46c4;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: clamp(0.68rem, 16cqw, 0.82rem);
   font-weight: 800;
   letter-spacing: 0.01em;
@@ -2054,7 +2119,7 @@ function trendDomain(key, values) {
   white-space: nowrap;
 }
 .pool .seg { height: 9px; }
-.pool-pct.warn { color: #b45309; font-weight: 800; }
+.pool-pct.warn { color: var(--warn); font-weight: 800; }
 .pool-pct.crit { color: var(--crit); font-weight: 800; }
 .pool-empty {
   flex: 1;
@@ -2062,12 +2127,12 @@ function trendDomain(key, values) {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #f7f8fb;
-  color: #5c6775;
+  background: var(--chip);
+  color: var(--chip-ink);
   font-size: 1.25rem;
   font-weight: 700;
 }
-.pool-card .io-note { font-size: 0.92rem; font-weight: 700; color: #3d4754; letter-spacing: 0; }
+.pool-card .io-note { font-size: 0.92rem; font-weight: 700; color: var(--ink); letter-spacing: 0; }
 
 .disk-row {
   flex: 1;
@@ -2083,7 +2148,7 @@ function trendDomain(key, values) {
   flex: 1 1 0;
   min-width: 0;
   container-type: inline-size;
-  background: #f7f6fb;
+  background: var(--disk-tile);
   border-radius: 14px;
   padding: 18px 8px 8px;
   display: flex;
@@ -2106,10 +2171,10 @@ function trendDomain(key, values) {
   font-weight: 800;
   line-height: 1.4;
 }
-.disk-role.os { background: #efeaff; color: #5b46c4; }
-.disk-role.pool { background: #e7eefe; color: #315fc4; }
-.disk-role.cache { background: #f0eef6; color: #6a6280; }
-.disk-role.ext { background: #fff4e5; color: #b45309; }
+.disk-role.os { background: var(--accent-soft); color: var(--accent); }
+.disk-role.pool { background: var(--chip); color: var(--blue); }
+.disk-role.cache { background: var(--accent-soft); color: var(--muted); }
+.disk-role.ext { background: var(--warn-soft); color: var(--warn); }
 .disk-pager {
   display: inline-flex;
   align-items: center;
@@ -2117,12 +2182,12 @@ function trendDomain(key, values) {
   font-size: 0.75rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  color: #5b46c4;
+  color: var(--accent);
 }
 .disk-pager button {
   border: 0;
-  background: #efeaff;
-  color: #5b46c4;
+  background: var(--accent-soft);
+  color: var(--accent);
   border-radius: 999px;
   font: inherit;
   font-size: 0.72rem;
@@ -2151,7 +2216,7 @@ function trendDomain(key, values) {
   margin-top: 2px;
   font-size: clamp(0.58rem, 12cqw, 0.68rem);
   letter-spacing: 0.04em;
-  color: #9aa3b2;
+  color: var(--faint);
   font-weight: 700;
 }
 .disk-temp {
