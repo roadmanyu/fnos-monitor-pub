@@ -69,3 +69,8 @@ alerts:
 
 display:
   timezone: "Asia/Shanghai"
+  # 容量显示的默认值。网页「展示校准」保存后写入 SQLite，优先于这里。
+  # unit: gib（1024，GiB/TiB）/ gb（1000，GB/TB）/ label（厂商标称，没有则 GiB）
+  capacity:
+    unit: gib
+    decimals: 1

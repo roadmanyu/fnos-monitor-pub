@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.alerts.rules import evaluate
+from app.calibration import apply_disk_calibration, visible_disks
 from app.collectors import disk as disk_col
 from app.collectors import docker_col
 from app.collectors import fans as fan_col
@@ -92,10 +93,15 @@ class CollectorLoop:
                 {
                     "id": d.get("id"),
                     "model": d.get("model"),
+                    "serial": d.get("serial") or "",
+                    "wwn": d.get("wwn") or "",
+                    "identity_key": d.get("identity_key"),
+                    "identity_stable": d.get("identity_stable"),
                     "healthy": d.get("healthy"),
                     "temp_c": d.get("temp_c"),
                     "power_on_hours": d.get("power_on_hours"),
                     "capacity_bytes": d.get("capacity_bytes"),
+                    "label_bytes": d.get("label_bytes"),
                     "media": d.get("media"),
                     "skipped_standby": d.get("skipped_standby"),
                     "mock": d.get("mock", False),
@@ -105,13 +111,18 @@ class CollectorLoop:
             self._full_smart = {d["id"]: d for d in smart_list if d.get("id")}
             self._last_smart_mono = now_m
 
-        disk_col.annotate_disk_roles(self._smart_cache, filesystems)
+        raw_disks = [dict(item) for item in self._smart_cache]
+        disk_col.annotate_disk_roles(raw_disks, filesystems)
+        disks_raw = [dict(item) for item in raw_disks]
+        calibrated = apply_disk_calibration(raw_disks, self.store.list_disk_calibrations())
+        visible = visible_disks(calibrated)
         snapshot = {
             "ts": ts,
             "host": {k: v for k, v in host.items() if k != "mock"},
             "host_mock": bool(host.get("mock")),
             "filesystems": filesystems,
-            "disks_smart_summary": self._smart_cache,
+            "disks_smart_summary": visible,
+            "_disks_raw": disks_raw,
             "containers": containers,
             "docker": {
                 "running": sum(1 for c in containers if (c.get("state") or "").lower() == "running"),
@@ -160,8 +171,10 @@ class CollectorLoop:
             self.store.cleanup(cfg.collect.retention_days)
 
         set_latest(snapshot)
-        # 告警用精简快照（含 containers）
-        evaluate(self.store, cfg, snapshot)
+        # 隐藏只影响展示。告警仍看全部磁盘，避免藏起一块坏盘就不再通知。
+        alert_view = dict(snapshot)
+        alert_view["disks_smart_summary"] = calibrated
+        evaluate(self.store, cfg, alert_view)
         log.debug("collected at %s", ts)
 
     def get_smart_detail(self, disk_id: str) -> dict | None:

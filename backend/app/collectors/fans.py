@@ -15,6 +15,7 @@ from typing import Any
 
 import psutil
 
+from app.calibration import apply_fan_mapping
 from app.config import get_config
 
 log = logging.getLogger(__name__)
@@ -168,6 +169,7 @@ def _append_channel(
     found.append({
         "id": fan_id,
         "chip": chip or hw.name,
+        "raw_label": raw_label,
         "label": _display_label(raw_label, index),
         "role": _role(raw_label),
         "rpm": rpm,
@@ -195,6 +197,7 @@ def _from_psutil() -> list[dict[str, Any]]:
             rows.append({
                 "id": f"psutil:{chip}:{index}",
                 "chip": str(chip),
+                "raw_label": str(label),
                 "label": _display_label(str(label), index),
                 "role": _role(str(label)),
                 "rpm": int(current),
@@ -213,6 +216,7 @@ def _mock_state() -> dict[str, Any]:
             {
                 "id": "mock:cpu",
                 "chip": "mock",
+                "raw_label": "cpu",
                 "label": "CPU",
                 "role": "cpu",
                 "rpm": 1956,
@@ -225,6 +229,7 @@ def _mock_state() -> dict[str, Any]:
             {
                 "id": "mock:chassis",
                 "chip": "mock",
+                "raw_label": "chassis",
                 "label": "机箱",
                 "role": "chassis",
                 "rpm": 1106,
@@ -267,17 +272,90 @@ def _decorate(fans: list[dict[str, Any]]) -> dict[str, Any]:
     return {"fans": fans, "control": "readonly", "reason": reason}
 
 
+def _mapping_rows() -> list[dict[str, Any]]:
+    try:
+        from app.main import store
+    except Exception:
+        return []
+    if store is None:
+        return []
+    try:
+        return store.list_fan_maps()
+    except Exception:
+        log.debug("fan map load failed", exc_info=True)
+        return []
+
+
+def _refresh_control(state: dict[str, Any]) -> dict[str, Any]:
+    """映射拿掉通道后，按剩下的风扇重算可调状态。模拟数据始终只读。"""
+    if state.get("reason") == "mock":
+        state["control"] = "readonly"
+        for fan in state.get("fans") or []:
+            fan["controllable"] = False
+            fan["mode_controllable"] = False
+        return state
+    fans = state.get("fans") or []
+    cfg = get_config().fans
+    if not fans:
+        state["control"] = "off"
+        state["reason"] = ""
+        return state
+    if not cfg.control_enabled:
+        for fan in fans:
+            fan["controllable"] = False
+            fan["mode_controllable"] = False
+        state["control"] = "readonly"
+        state["reason"] = "control_disabled"
+        return state
+    if any(fan.get("controllable") for fan in fans):
+        state["control"] = "ready"
+        state["reason"] = ""
+        return state
+    if state.get("reason") != "readback_mismatch":
+        state["reason"] = "not_writable"
+    state["control"] = "readonly"
+    return state
+
+
+def _with_mapping(state: dict[str, Any], *, drop_excluded: bool) -> dict[str, Any]:
+    state = dict(state)
+    state["fans"] = apply_fan_mapping(state.get("fans") or [], _mapping_rows(), drop_excluded=drop_excluded)
+    return _refresh_control(state)
+
+
 def collect_fans(mock_on_failure: bool = True, force_mock: bool = False) -> dict[str, Any]:
     if force_mock:
-        return _mock_state()
+        return _with_mapping(_mock_state(), drop_excluded=True)
     try:
         fans = _scan()
     except Exception as exc:
         log.warning("fan collect failed: %s", exc)
         if mock_on_failure:
-            return _mock_state()
+            return _with_mapping(_mock_state(), drop_excluded=True)
         raise
-    return _decorate(fans)
+    return _with_mapping(_decorate(fans), drop_excluded=True)
+
+
+def fans_for_calibration() -> list[dict[str, Any]]:
+    """设置页要看到被排除的通道，所以这里不丢掉它们。"""
+    from app.state import get_latest
+
+    latest = get_latest()
+    if latest.get("host_mock"):
+        state = _mock_state()
+    else:
+        try:
+            fans = _scan()
+        except Exception:
+            log.warning("fan calibration scan failed", exc_info=True)
+            if get_config().collect.mock_on_failure:
+                state = _mock_state()
+            else:
+                state = _decorate([])
+        else:
+            state = _decorate(fans)
+    mapped = _with_mapping(state, drop_excluded=False)
+    return mapped.get("fans") or []
 
 
 def public_state() -> dict[str, Any]:
@@ -303,6 +381,9 @@ def _ensure_pwm(fan_id: str) -> dict[str, Path | None]:
     cfg = get_config().fans
     if not cfg.control_enabled:
         raise FanRejected("control_disabled", "调速未开启")
+    for row in _mapping_rows():
+        if row.get("excluded") and row.get("fan_id") == fan_id:
+            raise FanRejected("not_writable", "这路风扇已从展示中排除")
     with _LOCK:
         if fan_id in _FORCED_READONLY:
             raise FanRejected("readback_mismatch", "写入后被系统改回，已停用调速")

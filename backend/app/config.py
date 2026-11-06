@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ServerCfg(BaseModel):
@@ -80,8 +80,43 @@ class AlertsCfg(BaseModel):
     rules: AlertRulesCfg = Field(default_factory=AlertRulesCfg)
 
 
+_CAPACITY_UNITS = {"gib", "gb", "label"}
+
+
+class CapacityCfg(BaseModel):
+    # gib：1024，显示 GiB/TiB。gb：1000，显示 GB/TB。label：厂商标称，没有则退回 GiB。
+    unit: str = "gib"
+    decimals: int = 1
+
+    @field_validator("unit", mode="before")
+    @classmethod
+    def _unit(cls, value: object) -> str:
+        text = str(value or "gib").strip().lower()
+        aliases = {
+            "1024": "gib",
+            "1000": "gb",
+            "vendor": "label",
+            "advertised": "label",
+            "标签容量": "label",
+        }
+        text = aliases.get(text, text)
+        if text not in _CAPACITY_UNITS:
+            return "gib"
+        return text
+
+    @field_validator("decimals", mode="before")
+    @classmethod
+    def _decimals(cls, value: object) -> int:
+        try:
+            number = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 1
+        return max(0, min(3, number))
+
+
 class DisplayCfg(BaseModel):
     timezone: str = "Asia/Shanghai"
+    capacity: CapacityCfg = Field(default_factory=CapacityCfg)
 
 
 class AppConfig(BaseModel):

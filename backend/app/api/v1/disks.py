@@ -10,7 +10,11 @@ router = APIRouter(tags=["disks"])
 def list_disks(_user: str = Depends(require_user)):
     latest = get_latest()
     filesystems = latest.get("filesystems") or []
-    smart = {d["id"]: d for d in (latest.get("disks_smart_summary") or []) if d.get("id")}
+    smart = {
+        d["id"]: d
+        for d in (latest.get("disks_smart_summary") or [])
+        if d.get("id") and d.get("visible", True)
+    }
     return {
         "filesystems": filesystems,
         "smart": list(smart.values()),

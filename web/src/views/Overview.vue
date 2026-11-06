@@ -6,6 +6,7 @@ import { activeProfile, markReach, nas, rememberLocalName } from '../nas/profile
 import Alerts from './Alerts.vue'
 import Disks from './Disks.vue'
 import Docker from './Docker.vue'
+import { formatCapacity } from '../utils/capacity'
 import {
   clampPct,
   formatBytes,
@@ -44,7 +45,12 @@ const filesystems = computed(() => {
     (a, b) => (Number(b.used_pct) || 0) - (Number(a.used_pct) || 0)
   )
 })
-const disks = computed(() => snap.value?.disks_smart_summary || [])
+const disks = computed(() => (snap.value?.disks_smart_summary || []).filter((d) => d.visible !== false))
+const capacityDisplay = computed(() => meta.value?.capacity_display || { unit: 'gib', decimals: 1 })
+
+function capacityText(bytes, labelBytes) {
+  return formatCapacity(bytes, capacityDisplay.value, labelBytes)
+}
 const cpuTemp = computed(() => host.value?.temps_c?.cpu ?? null)
 const cores = computed(() => {
   const raw = host.value?.cpu_cores
@@ -377,6 +383,8 @@ const fanRows = computed(() => {
 })
 const primaryFan = computed(() => {
   const rows = fanRows.value
+  const mapped = rows.find((fan) => fan.primary && !fan.missing)
+  if (mapped) return mapped
   return rows.find((fan) => fan.role === 'cpu' && fan.rpm != null)
     || rows.find((fan) => fan.rpm != null)
     || rows[0]
@@ -1134,8 +1142,8 @@ function trendDomain(key, values) {
             <div class="pool-name">{{ poolName(fs.mount) }}</div>
             <div v-if="poolBadge(fs)" class="pool-badge">{{ poolBadge(fs) }}</div>
             <div class="pool-fig">
-              <b>{{ formatBytes(fs.used_bytes) }}</b>
-              <span>/ {{ formatBytes(fs.total_bytes) }}</span>
+              <b>{{ capacityText(fs.used_bytes) }}</b>
+              <span>/ {{ capacityText(fs.total_bytes) }}</span>
             </div>
             <div class="seg" :class="barColor(fs.used_pct)" :style="{ '--p': clampPct(fs.used_pct) + '%' }"></div>
             <div class="pool-pct" :class="barColor(fs.used_pct)">{{ formatPct(fs.used_pct, 0) }}%</div>
@@ -1163,9 +1171,9 @@ function trendDomain(key, values) {
         <div v-if="diskPageItems.length" class="disk-row">
           <article v-for="d in diskPageItems" :key="d.id" class="disk">
             <span v-if="d.role" class="disk-role" :class="roleClass(d.role)">{{ d.role }}</span>
-            <div class="disk-cap">{{ d.capacity_bytes != null ? formatBytes(d.capacity_bytes) : '—' }}</div>
+            <div class="disk-cap">{{ capacityText(d.capacity_bytes, d.label_bytes) }}</div>
             <div v-if="d.media" class="disk-media">{{ d.media }}</div>
-            <div class="disk-id">{{ d.id }}</div>
+            <div class="disk-id" :title="d.id">{{ d.display_name || d.label || d.id }}</div>
             <div class="disk-k">温度</div>
             <div class="disk-temp">{{ d.temp_c != null ? d.temp_c + '°C' : '—' }}</div>
             <div class="disk-k">健康</div>

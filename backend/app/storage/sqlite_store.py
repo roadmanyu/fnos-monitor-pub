@@ -47,6 +47,33 @@ class Store:
               acked INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_alert_fp_ts ON alert_events(fingerprint, ts);
+
+            CREATE TABLE IF NOT EXISTS disk_calibration (
+              identity_key TEXT PRIMARY KEY,
+              serial TEXT NOT NULL DEFAULT '',
+              wwn TEXT NOT NULL DEFAULT '',
+              visible INTEGER NOT NULL DEFAULT 1,
+              label TEXT NOT NULL DEFAULT '',
+              role TEXT NOT NULL DEFAULT '',
+              media TEXT NOT NULL DEFAULT '',
+              interface TEXT NOT NULL DEFAULT '',
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              updated_ts TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fan_channel_map (
+              channel_key TEXT PRIMARY KEY,
+              fan_id TEXT NOT NULL DEFAULT '',
+              role TEXT NOT NULL DEFAULT '',
+              primary_display INTEGER NOT NULL DEFAULT 0,
+              excluded INTEGER NOT NULL DEFAULT 0,
+              updated_ts TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_kv (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             """
         )
         self._conn.commit()
@@ -209,3 +236,131 @@ class Store:
         self._conn.execute("DELETE FROM metric_points WHERE ts < ?", (metric_cut,))
         self._conn.execute("DELETE FROM alert_events WHERE ts < ?", (alert_cut,))
         self._conn.commit()
+
+    def get_kv(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM app_kv WHERE key = ?", (key,)).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_kv(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO app_kv(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+            self._conn.commit()
+
+    def delete_kv(self, key: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM app_kv WHERE key = ?", (key,))
+            self._conn.commit()
+
+    def list_disk_calibrations(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM disk_calibration ORDER BY sort_order, identity_key"
+            ).fetchall()
+        return [self._disk_row(row) for row in rows]
+
+    def upsert_disk_calibrations(self, items: list[dict[str, Any]]) -> None:
+        ts = _utc_now()
+        with self._lock:
+            for item in items:
+                self._conn.execute(
+                    """
+                    INSERT INTO disk_calibration(
+                      identity_key, serial, wwn, visible, label, role, media, interface, sort_order, updated_ts
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(identity_key) DO UPDATE SET
+                      serial = excluded.serial,
+                      wwn = excluded.wwn,
+                      visible = excluded.visible,
+                      label = excluded.label,
+                      role = excluded.role,
+                      media = excluded.media,
+                      interface = excluded.interface,
+                      sort_order = excluded.sort_order,
+                      updated_ts = excluded.updated_ts
+                    """,
+                    (
+                        item["identity_key"],
+                        item.get("serial") or "",
+                        item.get("wwn") or "",
+                        1 if item.get("visible", True) else 0,
+                        item.get("label") or "",
+                        item.get("role") or "",
+                        item.get("media") or "",
+                        item.get("interface") or "",
+                        int(item.get("sort_order") or 0),
+                        ts,
+                    ),
+                )
+            self._conn.commit()
+
+    def list_fan_maps(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM fan_channel_map ORDER BY channel_key"
+            ).fetchall()
+        return [self._fan_row(row) for row in rows]
+
+    def upsert_fan_maps(self, items: list[dict[str, Any]]) -> None:
+        ts = _utc_now()
+        with self._lock:
+            for item in items:
+                self._conn.execute(
+                    """
+                    INSERT INTO fan_channel_map(
+                      channel_key, fan_id, role, primary_display, excluded, updated_ts
+                    ) VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(channel_key) DO UPDATE SET
+                      fan_id = excluded.fan_id,
+                      role = excluded.role,
+                      primary_display = excluded.primary_display,
+                      excluded = excluded.excluded,
+                      updated_ts = excluded.updated_ts
+                    """,
+                    (
+                        item["channel_key"],
+                        item.get("fan_id") or "",
+                        item.get("role") or "",
+                        1 if item.get("primary") else 0,
+                        1 if item.get("excluded") else 0,
+                        ts,
+                    ),
+                )
+            if any(item.get("primary") for item in items):
+                keys = [item["channel_key"] for item in items if item.get("primary")]
+                marks = ",".join("?" for _ in keys)
+                self._conn.execute(
+                    f"UPDATE fan_channel_map SET primary_display = 0 WHERE channel_key NOT IN ({marks})",
+                    keys,
+                )
+            self._conn.commit()
+
+    @staticmethod
+    def _disk_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "identity_key": row["identity_key"],
+            "serial": row["serial"],
+            "wwn": row["wwn"],
+            "visible": bool(row["visible"]),
+            "label": row["label"],
+            "role": row["role"],
+            "media": row["media"],
+            "interface": row["interface"],
+            "sort_order": int(row["sort_order"]),
+        }
+
+    @staticmethod
+    def _fan_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "channel_key": row["channel_key"],
+            "fan_id": row["fan_id"],
+            "role": row["role"],
+            "primary": bool(row["primary_display"]),
+            "excluded": bool(row["excluded"]),
+        }
