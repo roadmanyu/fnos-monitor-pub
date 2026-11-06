@@ -52,6 +52,13 @@ function statusText(id) {
   return '已登录'
 }
 
+function statusClass(id) {
+  const state = tabState(id)
+  if (state === 'offline') return 'crit'
+  if (state === 'online') return 'ok'
+  return 'muted'
+}
+
 function startEdit(p) {
   editingId.value = p.id
   editForm.value = { name: p.name, baseUrl: p.baseUrl || '' }
@@ -152,7 +159,7 @@ watch(() => nas.activeId, loadPage)
     <div class="card">
       <h3>服务</h3>
       <p v-if="meta">版本 {{ meta.app_version }} · API {{ meta.api_version }}</p>
-      <p class="muted">采集周期 {{ meta?.collect_interval_sec }}s · 展示时区 {{ meta?.timezone_display }}</p>
+      <p class="muted">采集周期 每 {{ meta?.collect_interval_sec ?? 1 }} 秒 · 展示时区 {{ meta?.timezone_display }}</p>
       <p class="muted">修改账号/告警通道请编辑 NAS 上的 <code>config.yaml</code> 后重启容器。</p>
     </div>
     <div class="card" style="margin-top:16px">
@@ -172,7 +179,7 @@ watch(() => nas.activeId, loadPage)
           <b>{{ p.name }}</b>
           <div class="muted">{{ p.baseUrl || '当前站点' }}</div>
         </div>
-        <span class="pill" :class="tabState(p.id) === 'online' ? 'ok' : 'muted'">{{ statusText(p.id) }}</span>
+        <span class="pill" :class="statusClass(p.id)">{{ statusText(p.id) }}</span>
         <button class="btn ghost" type="button" @click="openNas(p.id)">打开</button>
         <button class="btn ghost" type="button" @click="startEdit(p)">编辑</button>
         <button class="btn ghost" type="button" @click="startRelogin(p)">重新登录</button>

@@ -105,6 +105,7 @@ class CollectorLoop:
             self._full_smart = {d["id"]: d for d in smart_list if d.get("id")}
             self._last_smart_mono = now_m
 
+        disk_col.annotate_disk_roles(self._smart_cache, filesystems)
         snapshot = {
             "ts": ts,
             "host": {k: v for k, v in host.items() if k != "mock"},

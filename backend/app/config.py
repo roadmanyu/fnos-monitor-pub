@@ -22,7 +22,7 @@ class AuthCfg(BaseModel):
 
 
 class CollectCfg(BaseModel):
-    interval_sec: int = 2
+    interval_sec: int = 1
     fs_interval_sec: int = 60
     retention_days: int = 7
     mock_on_failure: bool = True

@@ -5,11 +5,11 @@
   --ink: #1c2430;
   --text: #1c2430;
   --muted: #6d7886;
-  --line: #e7ebf0;
-  --border: #e7ebf0;
+  --line: #e6e2f2;
+  --border: #e4e0f0;
   --teal: #2ec9c0;
   --teal-ink: #0f766e;
-  --accent: #0f766e;
+  --accent: #5b46c4;
   --pink: #f062b0;
   --orange: #ff8a4c;
   --blue: #5b8def;
@@ -19,7 +19,7 @@
   --warn-bg: #fff4e5;
   --crit: #e11d48;
   --crit-bg: #fdecef;
-  --shadow: 0 10px 28px rgba(28, 36, 48, 0.06), 0 1px 2px rgba(28, 36, 48, 0.04);
+  --shadow: 0 10px 28px rgba(70, 52, 140, 0.07), 0 1px 2px rgba(28, 36, 48, 0.04);
   --radius: 20px;
   font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -31,9 +31,9 @@ body {
   min-height: 100vh;
   color: var(--text);
   background:
-    radial-gradient(1100px 420px at 8% -10%, rgba(46, 201, 192, 0.1), transparent 55%),
-    radial-gradient(900px 380px at 100% 0%, rgba(240, 98, 176, 0.07), transparent 50%),
-    var(--bg);
+    radial-gradient(1100px 420px at 8% -10%, rgba(124, 108, 245, 0.16), transparent 55%),
+    radial-gradient(900px 380px at 100% 0%, rgba(46, 201, 192, 0.08), transparent 50%),
+    #f6f4fb;
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -59,8 +59,8 @@ code {
 }
 
 .card {
-  background: var(--card);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: #fff;
+  border: 1px solid rgba(124, 108, 245, 0.16);
   border-radius: var(--radius);
   padding: 16px 18px;
   box-shadow: var(--shadow);
@@ -149,8 +149,8 @@ code {
   color: #fff;
   font-size: 0.85rem;
   font-weight: 700;
-  background: linear-gradient(145deg, #3ad7ce, #0f766e);
-  box-shadow: 0 4px 10px rgba(15, 118, 110, 0.25);
+  background: linear-gradient(145deg, #c4b6ff, #6d5bd0);
+  box-shadow: 0 4px 10px rgba(109, 91, 208, 0.28);
 }
 
 .nav-links {
@@ -168,8 +168,8 @@ code {
 }
 
 .nav a.router-link-active {
-  background: #e7f6f4;
-  color: var(--teal-ink);
+  background: #f3efff;
+  color: #5b46c4;
 }
 
 .nav .btn { margin-left: auto; }
@@ -192,13 +192,13 @@ code {
 }
 .nas-tab .tab-state { font-size: 0.68rem; font-weight: 650; color: #7d8b9c; }
 .nas-tab.on {
-  background: #e7f6f4;
-  color: var(--teal-ink);
+  background: #f3efff;
+  color: #5b46c4;
 }
-.nas-tab.on .tab-state { color: var(--teal-ink); }
+.nas-tab.on .tab-state { color: #5b46c4; }
 .nas-tab.offline,
-.nas-tab.offline .tab-state { color: #9aa3b2; }
-.nas-tab.add { color: var(--teal-ink); }
+.nas-tab.offline .tab-state { color: var(--crit); }
+.nas-tab.add { color: #5b46c4; }
 .brand-name { white-space: nowrap; }
 
 #add-nas,

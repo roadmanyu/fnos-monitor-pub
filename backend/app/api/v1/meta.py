@@ -29,6 +29,7 @@ def meta(_user: str = Depends(require_user)):
         "hostname": hostname,
         "last_collect_ts": latest.get("ts"),
         "collect_interval_sec": cfg.collect.interval_sec,
+        "fan_min_pwm_percent": cfg.fans.min_pwm_percent,
         "power_rated_watts": cfg.power.rated_watts,
         "disk_bps_cap": cfg.collect.disk_bps_cap,
         "timezone_display": cfg.display.timezone,

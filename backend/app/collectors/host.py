@@ -60,6 +60,7 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
             "uptime_sec": uptime_sec,
             "net_up_bps": None if up_bps is None else round(up_bps, 1),
             "net_down_bps": None if down_bps is None else round(down_bps, 1),
+            **_net_link(),
             "disk_read_bps": None if read_bps is None else round(read_bps, 1),
             "disk_write_bps": None if write_bps is None else round(write_bps, 1),
             "disk_bps_peak": None if disk_peak is None else round(disk_peak, 1),
@@ -74,6 +75,48 @@ def collect_host(mock_on_failure: bool = True) -> dict[str, Any]:
         if mock_on_failure:
             return _mock_host()
         raise
+
+
+def format_link_speed(mbps: int | None) -> str | None:
+    """把 sysfs 的 Mbps 收成 10G / 2.5G / 100M。读不到或为负时返回 None。"""
+    if mbps is None or mbps <= 0:
+        return None
+    if mbps >= 1000:
+        g = mbps / 1000.0
+        if abs(g - round(g)) < 0.05:
+            return f"{int(round(g))}G"
+        text = f"{g:.1f}".rstrip("0").rstrip(".")
+        return f"{text}G"
+    return f"{int(mbps)}M"
+
+
+def _default_iface() -> str | None:
+    try:
+        lines = Path("/proc/net/route").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "00000000" and parts[0] and parts[0] != "lo":
+            return parts[0]
+    return None
+
+
+def _iface_speed_mbps(name: str) -> int | None:
+    path = Path("/sys/class/net") / name / "speed"
+    try:
+        raw = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    if raw <= 0:
+        return None
+    return raw
+
+
+def _net_link() -> dict[str, str | None]:
+    name = _default_iface()
+    speed = format_link_speed(_iface_speed_mbps(name)) if name else None
+    return {"net_iface": name, "net_speed": speed}
 
 
 def _net_rates() -> tuple[float | None, float | None]:
@@ -216,6 +259,8 @@ def _mock_host() -> dict[str, Any]:
         "uptime_sec": 3600 * 24,
         "net_up_bps": 12_000.0,
         "net_down_bps": 80_000.0,
+        "net_iface": "eth0",
+        "net_speed": "1G",
         "disk_read_bps": 0.0,
         "disk_write_bps": 40_000.0,
         "disk_bps_peak": 40_000.0,
